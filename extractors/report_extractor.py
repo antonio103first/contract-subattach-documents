@@ -60,30 +60,85 @@ class InvestmentReportData:
 
 
 def extract_report_data(filepath: str) -> InvestmentReportData:
-    """투자심사보고서 DOCX에서 데이터를 추출한다."""
-    doc = Document(filepath)
+    """투자심사보고서에서 데이터를 추출한다. DOCX와 PDF 모두 지원."""
+    ext = filepath.lower().rsplit('.', 1)[-1] if '.' in filepath else ''
     data = InvestmentReportData()
 
-    tables = doc.tables
-    paragraphs = [p.text.strip() for p in doc.paragraphs]
-    full_text = "\n".join(paragraphs)
+    if ext == 'pdf':
+        from extractors.pdf_extractor import extract_text_from_pdf
+        full_text = extract_text_from_pdf(filepath)
+        paragraphs = [p.strip() for p in full_text.split('\n') if p.strip()]
+        doc = None
+        tables = []
 
-    # Table 0: 일정/담당자
-    if len(tables) > 0:
-        _extract_table0(tables[0], data)
+        # PDF에서는 텍스트 기반으로 모든 데이터 추출
+        _extract_from_pdf_text(full_text, data)
+    else:
+        doc = Document(filepath)
+        tables = doc.tables
+        paragraphs = [p.text.strip() for p in doc.paragraphs]
+        full_text = "\n".join(paragraphs)
 
-    # Table 1: 회사 개요
-    if len(tables) > 1:
-        _extract_table1(tables[1], data)
+        # Table 0: 일정/담당자
+        if len(tables) > 0:
+            _extract_table0(tables[0], data)
 
-    # Table 3: 주주현황 → 지분율
-    if len(tables) > 3:
-        _extract_shareholder_table(tables, data)
+        # Table 1: 회사 개요
+        if len(tables) > 1:
+            _extract_table1(tables[1], data)
+
+        # Table 3: 주주현황 → 지분율
+        if len(tables) > 3:
+            _extract_shareholder_table(tables, data)
 
     # 본문 텍스트에서 투자 조건 추출
     _extract_from_text(full_text, data, doc)
 
     return data
+
+
+def _extract_from_pdf_text(full_text: str, data: InvestmentReportData):
+    """PDF 텍스트에서 테이블 없이 모든 데이터를 텍스트 기반으로 추출."""
+    # 회사명
+    m = re.search(r'[㈜(주)]\s*(\S+)', full_text)
+    if m:
+        data.company_name = "㈜" + m.group(1)
+
+    # 대표이사
+    m = re.search(r'대표이사[:\s]*([가-힣]{2,4})', full_text)
+    if m:
+        data.representative = m.group(1)
+
+    # 사업자등록번호
+    m = re.search(r'(\d{3}-\d{2}-\d{5})', full_text)
+    if m:
+        data.business_registration = m.group(1)
+
+    # 주소
+    m = re.search(r'(서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주)\S*\s*\S+\s*\S+[^)\n]{5,50}', full_text)
+    if m:
+        data.address = m.group(0).strip()
+
+    # 설립일
+    m = re.search(r'설립일[:\s]*([\d.]+)', full_text)
+    if m:
+        data.establishment_date = m.group(1)
+
+    # 펀드명
+    m = re.search(r'(20\d{2}\s*\S*\s*\S*\s*\S*\s*\d+호\s*펀드)', full_text)
+    if m:
+        data.fund_name = m.group(1)
+
+    # 담당자
+    m = re.search(r'발굴[:\s]*(\S+\s*\(\d+%\))', full_text)
+    if m:
+        data.discoverer = m.group(1)
+    m = re.search(r'심사[:\s]*(\S+\s*\(\d+%\)(?:\s*,?\s*\S+\s*\(\d+%\))*)', full_text)
+    if m:
+        data.reviewer = m.group(1)
+    m = re.search(r'사후관리[:\s]*(\S+\s*\(\d+%\))', full_text)
+    if m:
+        data.post_manager = m.group(1)
 
 
 def _extract_table0(table, data: InvestmentReportData):

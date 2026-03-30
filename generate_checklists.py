@@ -36,11 +36,11 @@ def main():
     )
     parser.add_argument(
         "--contract", required=True,
-        help="투자계약서 DOCX 파일 경로"
+        help="투자계약서 파일 경로 (.docx 또는 .pdf)"
     )
     parser.add_argument(
         "--report", required=True,
-        help="투자심사보고서 DOCX 파일 경로"
+        help="투자심사보고서 파일 경로 (.docx 또는 .pdf)"
     )
     parser.add_argument(
         "--output-dir", default="./output",

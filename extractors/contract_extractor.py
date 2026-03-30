@@ -49,10 +49,19 @@ class InvestmentContractData:
 
 
 def extract_contract_data(filepath: str) -> InvestmentContractData:
-    """투자계약서 DOCX에서 데이터를 추출한다."""
-    doc = Document(filepath)
-    paragraphs = [p.text.strip() for p in doc.paragraphs]
-    full_text = "\n".join(paragraphs)
+    """투자계약서에서 데이터를 추출한다. DOCX와 PDF 모두 지원."""
+    ext = filepath.lower().rsplit('.', 1)[-1] if '.' in filepath else ''
+
+    if ext == 'pdf':
+        from extractors.pdf_extractor import extract_text_from_pdf
+        full_text = extract_text_from_pdf(filepath)
+        paragraphs = [p.strip() for p in full_text.split('\n') if p.strip()]
+        doc = None
+    else:
+        doc = Document(filepath)
+        paragraphs = [p.text.strip() for p in doc.paragraphs]
+        full_text = "\n".join(paragraphs)
+
     data = InvestmentContractData()
 
     # --- 당사자 정보 추출 ---
