@@ -79,17 +79,24 @@ def extract_report_data(filepath: str) -> InvestmentReportData:
         paragraphs = [p.text.strip() for p in doc.paragraphs]
         full_text = "\n".join(paragraphs)
 
-        # Table 0: 일정/담당자
-        if len(tables) > 0:
-            _extract_table0(tables[0], data)
+        # 테이블 자동 탐색 (구조에 무관하게)
+        for i, table in enumerate(tables):
+            if not table.rows:
+                continue
+            first_row_text = " ".join(c.text.strip() for c in table.rows[0].cells)
 
-        # Table 1: 회사 개요
-        if len(tables) > 1:
-            _extract_table1(tables[1], data)
+            # 일정/담당자 테이블 감지
+            if ('투심 일자' in first_row_text or '투심일자' in first_row_text
+                    or '일정' in first_row_text) and not data.review_date:
+                _extract_table0(table, data)
 
-        # Table 3: 주주현황 → 지분율
-        if len(tables) > 3:
-            _extract_shareholder_table(tables, data)
+            # 회사 개요 테이블 감지
+            if ('회사명' in first_row_text or '대표이사' in first_row_text
+                    or '대표자' in first_row_text) and not data.company_name:
+                _extract_table1(table, data)
+
+        # 주주현황 → 지분율
+        _extract_shareholder_table(tables, data)
 
     # 본문 텍스트에서 투자 조건 추출
     _extract_from_text(full_text, data, doc)
@@ -181,14 +188,13 @@ def _extract_table1(table, data: InvestmentReportData):
                 if '회사명' in c and i + 1 < len(cells):
                     data.company_name = cells[i + 1]
                     break
-        if '대표이사' in row_text:
+        if '대표이사' in row_text or '대표자' in row_text:
             for i, c in enumerate(cells):
-                if '대표이사' in c and i + 1 < len(cells):
-                    # 공백 제거 (강 귀 선 → 강귀선)
+                if ('대표이사' in c or '대표자' in c) and i + 1 < len(cells):
                     name = cells[i + 1].replace('\xa0', '').replace(' ', '').strip()
                     data.representative = name
                     break
-        if '본사주소' in row_text or '본사 주소' in row_text:
+        if '본사주소' in row_text or '본사 주소' in row_text or (row_text.startswith('주소') and len(cells) >= 2):
             # 주소는 보통 병합 셀 → 마지막 비빈칸
             for c in reversed(cells):
                 if c and '본사' not in c and len(c) > 5:
@@ -209,10 +215,16 @@ def _extract_table1(table, data: InvestmentReportData):
                 if '설립일' in c and i + 1 < len(cells):
                     data.establishment_date = cells[i + 1]
                     break
-        if '인력현황' in row_text:
+        if '인력현황' in row_text or '종업원' in row_text:
             for i, c in enumerate(cells):
-                if '인력현황' in c and i + 1 < len(cells):
+                if ('인력현황' in c or '종업원' in c) and i + 1 < len(cells):
                     data.num_employees = cells[i + 1]
+                    break
+        if '사업자등록번호' in row_text or '사업자번호' in row_text:
+            for c in cells:
+                m = re.search(r'(\d{3}-\d{2}-\d{5})', c)
+                if m:
+                    data.business_registration = m.group(1)
                     break
         if '주요사업' in row_text:
             for c in reversed(cells):
