@@ -1,8 +1,20 @@
 """투자계약서에서 데이터를 추출하는 모듈.
-어떤 양식이든 키워드 기반으로 자동 탐색한다."""
+어떤 양식이든 키워드 기반으로 자동 탐색한다. DOCX/PDF/HWP 지원."""
 import re
 from dataclasses import dataclass, field
 from docx import Document
+
+
+def _read_hwp_text(filepath: str) -> str:
+    """HWP v5.0 파일에서 PrvText 스트림으로 텍스트를 추출."""
+    import olefile
+    ole = olefile.OleFileIO(filepath)
+    try:
+        prvtext = ole.openstream('PrvText').read()
+        text = prvtext.decode('utf-16-le', errors='replace')
+    finally:
+        ole.close()
+    return text
 
 
 @dataclass
@@ -55,6 +67,10 @@ def extract_contract_data(filepath: str) -> InvestmentContractData:
     if ext == 'pdf':
         from extractors.pdf_extractor import extract_text_from_pdf
         full_text = extract_text_from_pdf(filepath)
+        paragraphs = [p.strip() for p in full_text.split('\n') if p.strip()]
+        doc = None
+    elif ext == 'hwp':
+        full_text = _read_hwp_text(filepath)
         paragraphs = [p.strip() for p in full_text.split('\n') if p.strip()]
         doc = None
     else:
