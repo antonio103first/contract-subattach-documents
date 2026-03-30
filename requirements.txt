@@ -1,0 +1,4 @@
+python-docx>=1.2.0
+docxtpl>=0.20.0
+lxml>=6.0.0
+olefile>=0.47
