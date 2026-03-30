@@ -161,7 +161,11 @@ def _extract_company_table(table, data: InvestmentReportData):
                     if keyword in c and i + 1 < len(cells):
                         val = cells[i + 1].replace('\xa0', '').strip()
                         if attr == 'representative':
-                            val = val.replace(' ', '')  # 공백 제거
+                            val = val.replace(' ', '')
+                            # 이름만 추출 (학력/경력이 붙어있을 경우)
+                            m_name = re.match(r'([가-힣]{2,4})', val)
+                            if m_name:
+                                val = m_name.group(1)
                         setattr(data, attr, val)
                         break
 

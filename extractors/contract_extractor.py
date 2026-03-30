@@ -90,19 +90,26 @@ def _extract_parties(full_text: str, data: InvestmentContractData):
             company_section = m.group(1)
             break
 
-    # ── 회사명 ──
-    for pat in [
-        r'(?:발행회사|피투자자|투자기업)\s*[:：]?\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
-        r'"회사"의\s*상호\s*[:：]\s*((?:주식회사|㈜|\(주\))\s*\S+)',
-        r'((?:주식회사|㈜)\s*\S+)',  # 광범위 fallback
-    ]:
-        m = re.search(pat, company_section or full_text[:3000])
-        if m:
-            name = m.group(1).strip().rstrip('"\')')
-            # 투자자/케이런/업무집행 등은 제외
-            if '케이런' not in name and '조합' not in name:
-                data.company_name = name
-                break
+    # ── 회사명 ── (본문 앞부분 우선, 별지 안의 섹션은 후순위)
+    search_areas = [full_text[:5000]]
+    if company_section:
+        search_areas.append(company_section)
+
+    for area in search_areas:
+        if data.company_name:
+            break
+        for pat in [
+            r'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
+            r'(?:^회사)\s*[:：]?\s*\n\s*((?:주식회사|㈜|\(주\))\s*\S+)',  # "회사\n주식회사 XXX"
+            r'(?:회사)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
+            r'"회사"의\s*상호\s*[:：]\s*((?:주식회사|㈜|\(주\))\s*\S+)',
+        ]:
+            m = re.search(pat, area, re.MULTILINE)
+            if m:
+                name = m.group(1).strip().rstrip('"\')')
+                if '케이런' not in name and '조합' not in name:
+                    data.company_name = name
+                    break
 
     # ── 대표이사 (회사의 대표, 투자자 대표 아님) ──
     search_area = company_section or full_text[:3000]
@@ -123,19 +130,23 @@ def _extract_parties(full_text: str, data: InvestmentContractData):
                 break
 
     # ── 주소 (회사 주소) ──
-    for area in [company_section, full_text[:5000]]:
-        if data.address:
-            break
-        # "주소 : ..." 패턴
-        m = re.search(r'주소\s*[:：]\s*(' + _REGIONS + r')([^\n]{5,80})', area)
-        if m:
-            data.address = (m.group(1) + m.group(2)).strip()
-            break
-        # 지역명으로 시작하는 줄
-        m = re.search(r'(' + _REGIONS + r')([^\n]{5,80})', area)
-        if m and '케이런' not in m.group(0) and '테헤란' not in m.group(0):
-            data.address = (m.group(1) + m.group(2)).strip()
-            break
+    # "회사" 라벨 다음의 주소를 추출 (투자자 주소 제외)
+    # 패턴: "회사 : 주식회사 XXX\n주소 : ..."
+    m = re.search(
+        r'(?:"?회사"?|피투자자)\s*[:：].*?(?:주식회사|㈜).*?\n\s*주소\s*[:：]\s*(' + _REGIONS + r')([^\n]{5,80})',
+        full_text[:5000], re.DOTALL
+    )
+    if m:
+        data.address = (m.group(1) + m.group(2)).strip()
+
+    if not data.address:
+        for area in [company_section, full_text[:5000]]:
+            if data.address:
+                break
+            m = re.search(r'주소\s*[:：]\s*(' + _REGIONS + r')([^\n]{5,80})', area)
+            if m and '테헤란' not in m.group(0) and '송강빌딩' not in m.group(0) and '강남구' not in m.group(0):
+                data.address = (m.group(1) + m.group(2)).strip()
+                break
 
     # ── 이해관계인 ──
     m = re.search(r'이해관계인.*?대표이사\s*([가-힣]{2,4})', full_text)
@@ -239,25 +250,77 @@ def _extract_article_numbers(paragraphs: list, full_text: str, data: InvestmentC
         'article_delay_penalty': ['지연배상금', '지연손해금'],
     }
 
-    # "제 N 조 제목" / "제N조(제목)" / "제N조 제목"
-    article_pattern = re.compile(r'제\s*(\d+)\s*조\s*[\(\s]*(.+?)$')
-
-    for p in paragraphs:
-        m = article_pattern.match(p)
-        if not m:
-            # 목차에서도 탐색: "제17조   투자금의 용도 및 제한"
-            m = article_pattern.search(p)
-        if not m:
-            continue
+    # 방법 1: 줄 시작에서 "제N조 제목" 패턴
+    article_pattern = re.compile(r'^제\s*(\d+)\s*조\s*[\(\s]*(.+?)[\)\s]*$', re.MULTILINE)
+    for m in article_pattern.finditer(full_text):
         num = m.group(1)
         title = m.group(2).strip()
-
+        # 너무 긴 제목은 본문 참조이므로 제외
+        if len(title) > 50:
+            continue
         for field_name, keywords in keyword_map.items():
             if getattr(data, field_name):
                 continue
             for kw in keywords:
                 if kw in title:
                     setattr(data, field_name, num)
+                    break
+
+    # 방법 2: 소제목(단독 줄) + 본문 구조
+    # 예: "주식매수청구권\n\n다음 각 호의..." → 장/절 번호로 추정
+    heading_keywords = {
+        'article_fund_usage': ['투자금의 용도 및 제한', '투자금의 용도'],
+        'article_consent': ['경영사항에 대한 동의권', '동의권 및 협의권'],
+        'article_buyback': ['주식매수청구권'],
+        'article_damages': ['위약벌 및 손해배상', '위약벌', '손해배상'],
+        'article_delay_penalty': ['지연배상금', '지연손해금'],
+    }
+
+    for field_name, keywords in heading_keywords.items():
+        if getattr(data, field_name):
+            continue
+        for kw in keywords:
+            for pat in [
+                # 키워드가 소제목이고 이후 본문에 조문 참조
+                re.compile(kw + r'[^\n]*\n[^\n]*?제\s*(\d+)\s*조'),
+                # 본문 내에서 "제N조(키워드)"
+                re.compile(r'제\s*(\d+)\s*조\s*[\(（]' + re.escape(kw)),
+                # 본문에서 "제N조 키워드"
+                re.compile(r'제\s*(\d+)\s*조\s+' + re.escape(kw)),
+            ]:
+                m = pat.search(full_text)
+                if m:
+                    num = m.group(1)
+                    # 상법 조문(300번대 이상) 제외
+                    if int(num) < 200:
+                        setattr(data, field_name, num)
+                        break
+            if getattr(data, field_name):
+                break
+
+    # 방법 3: 조문 번호가 없는 구조 → 장(chapter) 번호 + 키워드 본문 위치로 추정
+    # "제5장 계약 위반에 대한 책임\n\n주식매수청구권\n\n..." 같은 구조
+    # 이 경우 본문 참조에서 자기 조문을 언급하는 패턴 탐색
+    for field_name, keywords in heading_keywords.items():
+        if getattr(data, field_name):
+            continue
+        for kw in keywords:
+            idx = full_text.find(kw)
+            if idx < 0:
+                continue
+            # 키워드 이후 2000자 범위에서 "본조" 또는 자기참조 패턴 탐색
+            after = full_text[idx:idx+3000]
+            # "제N조에 따른" 또는 "제N조의" 패턴에서 N 추출
+            refs = re.findall(r'제\s*(\d+)\s*조', after[:500])
+            # 가장 자주 나오는 조문 번호가 해당 조문일 가능성 높음
+            if refs:
+                from collections import Counter
+                counts = Counter(refs)
+                # 상법 조문 제외
+                valid = [(n, c) for n, c in counts.items() if int(n) < 100]
+                if valid:
+                    most_common = max(valid, key=lambda x: x[1])
+                    setattr(data, field_name, most_common[0])
                     break
 
 
