@@ -176,24 +176,25 @@ def _apply_replacements(text: str, replacements: dict) -> str:
     # 1. 단순 치환
     for old_val, new_val in simple.items():
         if old_val and new_val:
-            text = text.replace(old_val, new_val)
+            text = text.replace(old_val, _xml_safe(new_val))
 
     # 1.5. 조건/위약벌 개별 태그 치환
     for old_val, new_val in conditions.items():
         if old_val and new_val:
-            text = text.replace(old_val, new_val)
+            text = text.replace(old_val, _xml_safe(new_val))
 
     # 2. 순서 기반 치환 (XML과 PrvText 모두)
     for placeholder, values in ordered.items():
         for new_val in values:
             if new_val:
+                safe_val = _xml_safe(new_val)
                 # XML: >OOO<
                 pat = '>' + re.escape(placeholder) + '<'
-                repl = '>' + new_val + '<'
+                repl = '>' + safe_val + '<'
                 text = re.sub(pat, repl, text, count=1)
                 # PrvText: <OOO>
                 pat2 = '<' + re.escape(placeholder) + '>'
-                repl2 = '<' + new_val + '>'
+                repl2 = '<' + safe_val + '>'
                 text = re.sub(pat2, repl2, text, count=1)
 
     # 3. 표4 적(Y)/부(N) 치환 - 순서대로 처리
@@ -276,6 +277,17 @@ def _patch_flag_bits(template_path: str, target_path: str):
 
 
 # ━━━━━━━━━━━━━━━ 유틸 ━━━━━━━━━━━━━━━
+
+def _xml_safe(text: str) -> str:
+    """XML 특수문자를 이스케이프한다. 이미 이스케이프된 것은 건너뜀."""
+    if not text:
+        return text
+    # 이미 이스케이프된 &amp; 등은 보존
+    text = re.sub(r'&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)', '&amp;', text)
+    # < > 는 XML 태그가 아닌 경우만 (PrvText에서는 구분자로 사용)
+    # section0.xml에서는 이미 태그 안이므로 < > 치환 불필요
+    return text
+
 
 def _fmt_won(val: str) -> str:
     if not val:
