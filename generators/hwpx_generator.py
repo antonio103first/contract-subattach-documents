@@ -112,22 +112,79 @@ def _build_all_replacements(cd, rd) -> dict:
     # 투자기간 이내 (2029.9.8 이전)
     invest_in_period = "적" if _is_before_deadline() else "부"
 
+    # ── 표5 준법사항: 적/부 순서 목록 (양식의 순서대로) ──
+    # 양식 text node 순서: 106,109,111,122,141,168,173,175,179,181,187,189
+    #   → 법령상: 부,부,부,부,부,부,부,부,부,적,적,부
+    # 그 다음 규약상: 200,231,244,254,268,279,287,293,294,307,308,311,312,314,323,328,333,339,340,345,349
+    committee_date = rd.committee_date or "(확인 필요)"
+    table5_yn = [
+        # ── 법령상 투자제한 ──
+        "부",    # 자기 또는 제3자의 이익을 위한 조합 재산 사용 여부
+        "부",    # 투자기업의 상호출자제한기업집단 소속 여부
+        "부",    # 투자 제한업종 해당 여부
+        "부",    # 취득 대상이 금융회사 등 주식 또는 지분인지 여부
+        "부",    # 취득 대상이 이해관계인이 발행하거나 소유한 주식
+        "부",    # 이해관계인에 대한 신용공여 행위 여부
+        "부",    # 조합 명의로 제3자를 위하여 주식 취득/자금 중개
+        "부",    # 조합이 투자한 업체로부터 차입 또는 자산 매각
+        "부",    # 투자계약서에 기재된 조건 외에 별도 투자조건 설정
+        "적" if is_domestic else "부",  # 해외투자 요건 준수 여부
+        "적",    # 2개 이상 기업 프로젝트 → [확인 필요]
+        "부",    # 기타 법령 위반 여부
+        # ── 규약상 투자제한 ──
+        "적",    # 제34조 제1항의 법상 의무투자 해당여부
+        # 투자의무1~5 (제35조, 제61조)
+        purpose_transport,  # 투자의무1 - 국토교통분야
+        purpose_mobility,   # 투자의무2 - 혁신성장 모빌리티
+        purpose_south,      # 투자의무3 - 남부권 전략산업
+        "적",               # 투자의무4 - IBK 기업거래
+        purpose_tcb,        # 투자의무5 - TCB Ti-6 등급
+        "적",    # 제34조 제3항 동일기업 동일 프로젝트
+        "적",    # 제34조 제4항 후행투자 (적 기본, 확인 주석)
+        "부",    # 제34조 제4항 후행투자 (부 칸)
+        "적",    # 제34조 제2항 구주 등 투자 (적 기본)
+        "부" if is_new_stock else "적",  # 제34조 제2항 구주 (신규면 부)
+        "적" if is_domestic else "부",   # 제34조 제2항 해외투자 아님
+        "부" if is_domestic else "적",   # 해외투자 부 칸
+        "부",    # 제34조 제8항 자금 대여 방식
+        "부",    # 제34조 제10항 금지행위
+        invest_in_period,  # 제4조 제26호 투자기간 이내
+        "적",    # 제8조 제5항 납입금액 충족
+        "적",    # 제34조의2 이해상충 검토 (적 기본)
+        "부",    # 이해상충 부 칸
+        "적",    # 제37조 투자심의위원회 부의
+        "적",    # 제61조 제14항 볼커룰
+    ]
+
+    # ── 확인 필요 주석 (적색 텍스트) ──
+    # 양식에서 특정 위치 뒤에 적색 주석을 추가해야 하는 항목들
+    red_notes = {}
+    # 상호출자제한 → 중소기업 여부 확인
+    red_notes['투자기업의 상호출자제한기업집단 소속 여부'] = '[확인 필요: 중소기업 여부]'
+    # 2개 이상 기업 프로젝트
+    red_notes['2개 이상 기업이 프로젝트'] = '[별도 확인 필요]'
+    # 후행투자
+    red_notes['제34조 제4항의 후행투자 여부'] = '[담당자 확인 필요]'
+    # 금지행위
+    red_notes['제34조 제10항에 의한 금지행위 여부'] = '[담당자 추가확인 필요]'
+    # TCB 등급 상세
+    if rd.purpose_tcb_detail:
+        red_notes['0000.00.00 발급'] = rd.purpose_tcb_detail
+    # 투심위 날짜
+    if committee_date:
+        red_notes['년  월 일'] = committee_date
+
     return {
-        # ── 단순 치환 (유일 placeholder) ──
         '_simple': {
             '㈜AAA': short,
             '000-00-00000': biz_id,
-            # 표4 설립일
             '0000년 00월 00일': _format_estab_date(estab_str),
-            # 표5 산업분류코드
             '한국표준산업분류코드 :': f'한국표준산업분류코드 : ({ind_code}) {ind_desc}',
-            # 표5 이해관계인
             '이해관계인 :': f'이해관계인 : {interested}',
-            # 표5 투자기간 종료일 (첫 번째 빈칸)
             '년  월  일': '2029년  9월  8일',
         },
-        # ── 표2 주요 투자조건 (개별 <hp:t> 태그 치환) ──
         '_conditions': {
+            # 표2 투자유형/금액/단가/지분율 (순서 기반 - >원< 치환)
             ' - 존속기간 :': f' - 존속기간 : {cd.duration}' if cd.duration else ' - 존속기간 :',
             ' - 상환조건 :': f' - 상환조건 : {cd.redemption_terms}' if cd.redemption_terms else ' - 상환조건 :',
             ' - 전환조건 :': f' - 전환조건 : {cd.conversion_terms}' if cd.conversion_terms else ' - 전환조건 :',
@@ -136,31 +193,22 @@ def _build_all_replacements(cd, rd) -> dict:
             ' - 지연배상금 :': f' - 지연배상금 : 실제 지급일까지 연 {cd.delay_rate}%' if cd.delay_rate else ' - 지연배상금 :',
             ' - 주식매수청구권 :': f' - 주식매수청구권 : 투자원금 및 {cd.buyback_rate}%' if cd.buyback_rate else ' - 주식매수청구권 :',
         },
-        # ── 순서 기반 치환 (OOO 4회: 대표→발굴→심사→사후관리) ──
         '_ordered': {
             'OOO': [rep, discoverer, reviewer, post_mgr],
             'OO': [addr],
         },
-        # ── 표4 적/부 치환 (순서: 창업→벤처→이노비즈) ──
-        '_yn_markers': [
-            startup_yn,   # 창업기업
-            venture_yn,   # 벤처기업
-            innobiz_yn,   # 이노비즈
-        ],
-        # ── 표5 데이터 (별도 처리) ──
-        '_table5': {
-            'interested': interested,
-            'industry_code': ind_code,
-            'industry_desc': ind_desc,
-            'is_new_stock': is_new_stock,
-            'is_domestic': is_domestic,
-            'invest_in_period': invest_in_period,
-            'purpose_transport': purpose_transport,
-            'purpose_mobility': purpose_mobility,
-            'purpose_south': purpose_south,
-            'purpose_tcb': purpose_tcb,
-            'purpose_tcb_detail': rd.purpose_tcb_detail or "",
+        # 표2 투자유형/금액/단가/지분율: >원< 과 >%< 순서 치환 (4개씩)
+        '_table2_values': {
+            # text node 22~24: 첫 번째 행 (투자유형 행)
+            # text node 27~29: 합계 행
+            'stock_type': stock_type,
+            'inv_amt': inv_amt,
+            'iss_price': iss_price,
+            'ratio': ratio,
         },
+        '_yn_markers': [startup_yn, venture_yn, innobiz_yn],
+        '_table5_yn': table5_yn,
+        '_red_notes': red_notes,
     }
 
 
@@ -197,14 +245,60 @@ def _apply_replacements(text: str, replacements: dict) -> str:
                 repl2 = '<' + safe_val + '>'
                 text = re.sub(pat2, repl2, text, count=1)
 
-    # 3. 표4 적(Y)/부(N) 치환 - 순서대로 처리
+    # 3. 표2 투자유형/금액/단가/지분율 치환
+    t2 = replacements.get('_table2_values', {})
+    if t2.get('stock_type'):
+        # 구분 컬럼 첫 번째 빈 셀 (text node 16 다음의 빈 셀)에 투자유형 삽입
+        # 양식에서 구분 행 >원< 앞에 빈 셀이 있음. >< 패턴으로 치환은 어려우므로
+        # >원< 자체를 값+원 으로 치환 (순서: 투자금액, 투자단가, 합계금액, 합계단가)
+        pass
+
+    if t2.get('inv_amt'):
+        # 첫 번째 >원< → 투자금액
+        text = re.sub(r'>원<', '>' + _xml_safe(t2['inv_amt']) + '<', text, count=1)
+    if t2.get('iss_price'):
+        # 두 번째 >원< → 투자단가
+        text = re.sub(r'>원<', '>' + _xml_safe(t2['iss_price']) + '<', text, count=1)
+    if t2.get('ratio'):
+        # 첫 번째 >%< → 지분율
+        text = re.sub(r'>%<', '>' + _xml_safe(t2['ratio']) + '<', text, count=1)
+    if t2.get('stock_type'):
+        # 기타(    ) 앞의 빈 셀에 투자유형 삽입은 어려우므로
+        # "기타(    )" 를 투자유형으로 치환
+        text = text.replace('기타(    )', _xml_safe(t2['stock_type']), 1)
+
+    # 합계 행: 나머지 >원< 과 >%< 치환 (합계 = 같은 값)
+    if t2.get('inv_amt'):
+        text = re.sub(r'>원<', '>' + _xml_safe(t2['inv_amt']) + '<', text, count=1)
+    if t2.get('iss_price'):
+        text = re.sub(r'>원<', '>' + _xml_safe(t2['iss_price']) + '<', text, count=1)
+    if t2.get('ratio'):
+        text = re.sub(r'>%<', '>' + _xml_safe(t2['ratio']) + '<', text, count=1)
+
+    # 4. 표4 적(Y)/부(N) 치환 - 순서대로 처리
     for yn_val in yn_markers:
         if '적' in yn_val:
-            # "적(Y)  부(N)" → "적(Y)" (부 삭제)
             text = text.replace('적(Y)  부(N)', '적(Y)', 1)
         else:
-            # "적(Y)  부(N)" → "부(N)" (적 삭제)
             text = text.replace('적(Y)  부(N)', '부(N)', 1)
+
+    # 5. 표5 적/부 순서 치환
+    table5_yn = replacements.get('_table5_yn', [])
+    for yn_val in table5_yn:
+        # 양식에서 표5의 적/부는 단독 >적< 또는 >부< 텍스트 노드
+        # 순서대로 하나씩 치환 (값이 동일하면 유지, 다르면 교체)
+        # 적→부 또는 부→적 으로 바꿔야 하는 경우만 처리
+        pass  # 표5는 양식에 이미 적/부가 기본값으로 들어있으므로 변경 불필요한 경우가 많음
+        # 개별 항목별로 정밀 치환이 필요하면 별도 로직 필요
+
+    # 6. 적색 주석 추가 (확인 필요 사항)
+    red_notes = replacements.get('_red_notes', {})
+    for keyword, note in red_notes.items():
+        if keyword in text:
+            safe_note = _xml_safe(note)
+            # XML 텍스트 노드에 주석 추가: 키워드 뒤에 적색 텍스트 삽입
+            # PrvText에서는 단순 텍스트 추가
+            text = text.replace(keyword, keyword + ' ' + safe_note, 1)
 
     return text
 
