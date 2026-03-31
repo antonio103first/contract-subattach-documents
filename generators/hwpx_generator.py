@@ -1,344 +1,299 @@
-"""준법사항체크리스트 HWPX 파일 생성 모듈. ZIP+XML 직접 생성."""
+"""준법사항체크리스트 HWPX 파일 생성 모듈.
+실제 양식 HWPX를 복사하여 section0.xml의 placeholder를 치환.
+작성지침에 따라 표1~5를 자동으로 채운다."""
 import os
+import re
 import zipfile
-from datetime import datetime
-from xml.sax.saxutils import escape
+from datetime import datetime, date
 
 
-def generate_hwpx_checklist(contract_data, report_data, output_path: str):
-    """준법사항체크리스트 HWPX 파일을 생성한다."""
-    now = datetime.now()
-    date_str = f"{now.year}년 {now.month}월 {now.day}일"
+DEFAULT_TEMPLATE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "(양식) 준법사항체크리스트(안)_2024 IBK혁신 케이런 모빌리티 7호 펀드_251208.hwpx"
+)
 
-    # 데이터 준비
-    company_name = report_data.company_name or contract_data.company_name
-    short_name = company_name
-    if '주식회사' in company_name:
-        short_name = "㈜" + company_name.replace('주식회사', '').replace('㈜', '').strip()
-    if not short_name.startswith('㈜') and '㈜' not in short_name:
-        short_name = "㈜" + short_name
 
-    representative = report_data.representative or contract_data.representative
-    address = report_data.address or contract_data.address
-    business_id = report_data.business_registration or ""
-    fund_name = report_data.fund_name or "2024 IBK혁신 케이런 모빌리티 7호 펀드"
+def generate_hwpx_checklist(contract_data, report_data, output_path: str,
+                             template_path: str = None):
+    """양식 HWPX를 복사하여 준법사항체크리스트를 생성한다."""
+    template_path = template_path or DEFAULT_TEMPLATE
+    if not os.path.exists(template_path):
+        print(f"[ERROR] HWPX 양식 파일을 찾을 수 없습니다: {template_path}")
+        return
 
-    investment_amount = contract_data.total_investment or ""
-    if investment_amount:
-        investment_amount = f"{investment_amount}원"
-    issue_price = contract_data.issue_price or ""
-    if issue_price:
-        issue_price = f"{issue_price}원"
-    share_ratio = report_data.share_ratio or ""
-    stock_type = contract_data.stock_type or report_data.stock_type or "상환전환우선주"
+    cd = contract_data
+    rd = report_data
+    replacements = _build_all_replacements(cd, rd)
+    warnings = _check_mismatches(cd, rd)
 
-    # 주요 투자조건
-    conditions_parts = []
-    if contract_data.duration:
-        conditions_parts.append(f" - 존속기간 : {contract_data.duration}")
-    if contract_data.redemption_terms:
-        conditions_parts.append(f" - 상환조건 : {contract_data.redemption_terms}")
-    if contract_data.conversion_terms:
-        conditions_parts.append(f" - 전환조건 : {contract_data.conversion_terms}")
-    if contract_data.refixing_terms:
-        conditions_parts.append(f" - {contract_data.refixing_terms}")
-    if contract_data.other_terms:
-        conditions_parts.append(f" - 기타 : {contract_data.other_terms} 등")
-    conditions_text = "\n".join(conditions_parts) if conditions_parts else ""
-
-    # 위약벌
-    penalty_parts = []
-    if contract_data.penalty_rate:
-        penalty_parts.append(f" - 위약벌 : 투자금의 {contract_data.penalty_rate}%")
-    if contract_data.delay_rate:
-        penalty_parts.append(f" - 지연배상금 : 실제 지급일까지 연 {contract_data.delay_rate}%")
-    if contract_data.buyback_rate:
-        penalty_parts.append(f" - 주식매수청구권 : 투자원금 및 {contract_data.buyback_rate}%")
-    penalty_text = "\n".join(penalty_parts)
-
-    # 담당자
-    discoverer = report_data.discoverer or ""
-    reviewer = report_data.reviewer or ""
-    post_manager = report_data.post_manager or ""
-
-    # 동반투자
-    co_investor_rows = ""
-    for name, amount, price in report_data.co_investors:
-        co_investor_rows += f"<{escape(name)}><{escape(amount)}><{escape(price or issue_price)}>"
-
-    # 설립일
-    establishment_date = report_data.establishment_date or ""
-
-    # 불일치 검사
-    mismatch_notes = []
-    _check_mismatch(mismatch_notes, "투자금액", report_data.investment_amount,
-                    (contract_data.total_investment + "원") if contract_data.total_investment else "")
-    _check_mismatch(mismatch_notes, "투자단가", report_data.issue_price,
-                    (contract_data.issue_price + "원") if contract_data.issue_price else "")
-    _check_mismatch(mismatch_notes, "투자방식", report_data.stock_type, contract_data.stock_type)
-
-    # HWPX 파일 생성
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    _copy_and_replace(template_path, output_path, replacements)
 
-    section_xml = _build_section_xml(
-        fund_name=fund_name,
-        short_name=short_name,
-        representative=representative,
-        business_id=business_id,
-        address=address,
-        stock_type=stock_type,
-        investment_amount=investment_amount,
-        issue_price=issue_price,
-        share_ratio=share_ratio,
-        conditions_text=conditions_text,
-        penalty_text=penalty_text,
-        discoverer=discoverer,
-        reviewer=reviewer,
-        post_manager=post_manager,
-        establishment_date=establishment_date,
-        co_investor_rows=co_investor_rows,
-        date_str=date_str,
-        mismatch_notes=mismatch_notes,
-    )
-
-    _write_hwpx(output_path, section_xml)
     print(f"[OK] HWPX 준법사항체크리스트 생성 완료: {output_path}")
-
-    if mismatch_notes:
-        print(f"\n[주의] HWPX {len(mismatch_notes)}건의 불일치 발견:")
-        for note in mismatch_notes:
+    if warnings:
+        print(f"\n[주의] HWPX {len(warnings)}건의 불일치 발견:")
+        for note in warnings:
             print(f"  - {note}")
 
 
-def _check_mismatch(notes: list, field_name: str, report_val: str, contract_val: str):
-    """불일치 확인."""
-    import re
-    if not report_val or not contract_val:
-        return
-    rv = re.sub(r'[\s,원주%㈜주식회사(주)]', '', str(report_val))
-    cv = re.sub(r'[\s,원주%㈜주식회사(주)]', '', str(contract_val))
-    if rv != cv:
-        notes.append(f"{field_name}: 투심보고서={report_val}, 투자계약서={contract_val}")
-        print(f"[WARNING] {field_name} 불일치: 투심보고서={report_val}, 투자계약서={contract_val}")
+def _build_all_replacements(cd, rd) -> dict:
+    """작성지침에 따라 모든 placeholder → 실제 값 매핑을 구성."""
+
+    # ── 기본 데이터 준비 ──
+    company = rd.company_name or cd.company_name
+    short = company
+    if '주식회사' in company:
+        short = "㈜" + company.replace('주식회사', '').replace('㈜', '').strip()
+    if not short.startswith('㈜') and '㈜' not in short and '(주)' not in short:
+        short = "㈜" + short
+
+    rep = rd.representative or cd.representative or ""
+    addr = rd.address or cd.address or ""
+    biz_id = rd.business_registration or "(미확인)"
+    stock_type = cd.stock_type or rd.stock_type or ""
+    inv_amt = _fmt_won(cd.total_investment)
+    iss_price = _fmt_won(cd.issue_price)
+    ratio = rd.share_ratio or ""
+    discoverer = rd.discoverer or ""
+    reviewer = rd.reviewer or ""
+    post_mgr = rd.post_manager or ""
+
+    # ── 표2: 주요 투자조건 ──
+    cond_parts = []
+    if cd.duration:
+        cond_parts.append(f" - 존속기간 : {cd.duration}")
+    if cd.redemption_terms:
+        cond_parts.append(f" - 상환조건 : {cd.redemption_terms}")
+    if cd.conversion_terms:
+        cond_parts.append(f" - 전환조건 : {cd.conversion_terms}")
+    extras = []
+    if cd.refixing_terms:
+        extras.append(cd.refixing_terms.replace("Refixing: ", ""))
+    if cd.other_terms:
+        extras.append(cd.other_terms)
+    if extras:
+        cond_parts.append(f" - 기타 : {', '.join(extras)} 등")
+    cond_text = " ".join(cond_parts)
+
+    # ── 표2: 위약벌 ──
+    pen_parts = []
+    if cd.penalty_rate:
+        pen_parts.append(f" - 위약벌 : 투자금의 {cd.penalty_rate}%")
+    if cd.delay_rate:
+        pen_parts.append(f" - 지연배상금 : 실제 지급일까지 연 {cd.delay_rate}%")
+    if cd.buyback_rate:
+        pen_parts.append(f" - 주식매수청구권 : 투자원금 및 {cd.buyback_rate}%")
+    pen_text = " ".join(pen_parts)
+
+    # ── 표4: 벤처기업 해당여부 (적/부 판단) ──
+    # 창업기업: 설립일 기준 7년 이내
+    startup_yn = _check_startup(rd.establishment_date)
+    estab_str = rd.establishment_date or "0000년 00월 00일"
+    # 벤처기업
+    venture_yn = "적(Y)" if rd.is_venture == "Y" else "부(N)"
+    # 이노비즈
+    innobiz_yn = "적(Y)" if rd.is_innobiz == "Y" else "부(N)"
+
+    # ── 표5: 준법사항 (적/부 판단) ──
+    # 이해관계인 (계약서에서)
+    interested = cd.interested_party or cd.representative or rep
+    # 산업분류코드
+    ind_code = rd.industry_code or "(확인 필요)"
+    ind_desc = rd.business_description or ""
+    # 주목적투자 해당여부
+    purpose_transport = _yn(rd.purpose_transport)
+    purpose_mobility = _yn(rd.purpose_mobility)
+    purpose_south = _yn(rd.purpose_south)
+    purpose_tcb = _yn(rd.purpose_tcb)
+    # 투자구분 (신규/구주)
+    is_new_stock = "신규" in (rd.investment_type or "") or "신주" in (cd.stock_type or "")
+    # 해외투자 여부 (국내 주소면 부)
+    is_domestic = bool(re.search(r'서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충|전|경|제주', addr))
+    # 투자기간 이내 (2029.9.8 이전)
+    invest_in_period = "적" if _is_before_deadline() else "부"
+
+    return {
+        # ── 단순 치환 (유일 placeholder) ──
+        '_simple': {
+            '㈜AAA': short,
+            '000-00-00000': biz_id,
+            # 표4 설립일
+            '0000년 00월 00일': _format_estab_date(estab_str),
+            # 표5 산업분류코드
+            '한국표준산업분류코드 :': f'한국표준산업분류코드 : ({ind_code}) {ind_desc}',
+            # 표5 이해관계인
+            '이해관계인 :': f'이해관계인 : {interested}',
+            # 표5 투자기간 종료일 (첫 번째 빈칸)
+            '년  월  일': '2029년  9월  8일',
+        },
+        # ── 표2 주요 투자조건 (개별 <hp:t> 태그 치환) ──
+        '_conditions': {
+            ' - 존속기간 :': f' - 존속기간 : {cd.duration}' if cd.duration else ' - 존속기간 :',
+            ' - 상환조건 :': f' - 상환조건 : {cd.redemption_terms}' if cd.redemption_terms else ' - 상환조건 :',
+            ' - 전환조건 :': f' - 전환조건 : {cd.conversion_terms}' if cd.conversion_terms else ' - 전환조건 :',
+            ' - 기타 :': f' - 기타 : {", ".join(extras)} 등' if extras else ' - 기타 :',
+            ' - 위약벌 :': f' - 위약벌 : 투자금의 {cd.penalty_rate}%' if cd.penalty_rate else ' - 위약벌 :',
+            ' - 지연배상금 :': f' - 지연배상금 : 실제 지급일까지 연 {cd.delay_rate}%' if cd.delay_rate else ' - 지연배상금 :',
+            ' - 주식매수청구권 :': f' - 주식매수청구권 : 투자원금 및 {cd.buyback_rate}%' if cd.buyback_rate else ' - 주식매수청구권 :',
+        },
+        # ── 순서 기반 치환 (OOO 4회: 대표→발굴→심사→사후관리) ──
+        '_ordered': {
+            'OOO': [rep, discoverer, reviewer, post_mgr],
+            'OO': [addr],
+        },
+        # ── 표4 적/부 치환 (순서: 창업→벤처→이노비즈) ──
+        '_yn_markers': [
+            startup_yn,   # 창업기업
+            venture_yn,   # 벤처기업
+            innobiz_yn,   # 이노비즈
+        ],
+        # ── 표5 데이터 (별도 처리) ──
+        '_table5': {
+            'interested': interested,
+            'industry_code': ind_code,
+            'industry_desc': ind_desc,
+            'is_new_stock': is_new_stock,
+            'is_domestic': is_domestic,
+            'invest_in_period': invest_in_period,
+            'purpose_transport': purpose_transport,
+            'purpose_mobility': purpose_mobility,
+            'purpose_south': purpose_south,
+            'purpose_tcb': purpose_tcb,
+            'purpose_tcb_detail': rd.purpose_tcb_detail or "",
+        },
+    }
 
 
-def _build_section_xml(**d):
-    """준법사항체크리스트 본문 XML을 생성한다."""
-    e = escape
+# ━━━━━━━━━━━━━━━ 치환 엔진 ━━━━━━━━━━━━━━━
 
-    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
-        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
-        xmlns:hc="http://www.hancom.co.kr/hwpml/2011/content"
-        xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+def _apply_replacements(text: str, replacements: dict) -> str:
+    """모든 치환 규칙을 적용."""
+    simple = replacements.get('_simple', {})
+    ordered = replacements.get('_ordered', {})
+    conditions = replacements.get('_conditions', {})
+    yn_markers = replacements.get('_yn_markers', [])
 
-  {_p("＜준법사항 체크리스트(준법감시보고서)＞", bold=True, size=24)}
+    # 1. 단순 치환
+    for old_val, new_val in simple.items():
+        if old_val and new_val:
+            text = text.replace(old_val, new_val)
 
-  {_p("")}
-  {_p(f"▣ 펀드명 : {e(d['fund_name'])}")}
-  {_p("▣ 업무집행조합원 : 케이런벤처스(유)")}
-  {_p("")}
+    # 1.5. 조건/위약벌 개별 태그 치환
+    for old_val, new_val in conditions.items():
+        if old_val and new_val:
+            text = text.replace(old_val, new_val)
 
-  {_p("1. 투자기업", bold=True)}
-  {_table_company(d)}
+    # 2. 순서 기반 치환 (XML과 PrvText 모두)
+    for placeholder, values in ordered.items():
+        for new_val in values:
+            if new_val:
+                # XML: >OOO<
+                pat = '>' + re.escape(placeholder) + '<'
+                repl = '>' + new_val + '<'
+                text = re.sub(pat, repl, text, count=1)
+                # PrvText: <OOO>
+                pat2 = '<' + re.escape(placeholder) + '>'
+                repl2 = '<' + new_val + '>'
+                text = re.sub(pat2, repl2, text, count=1)
 
-  {_p("")}
-  {_p("2. 투자내용", bold=True)}
-  {_p("")}
-  {_p("□ 투자유형 및 투자금액")}
-  {_table_investment(d)}
+    # 3. 표4 적(Y)/부(N) 치환 - 순서대로 처리
+    for yn_val in yn_markers:
+        if '적' in yn_val:
+            # "적(Y)  부(N)" → "적(Y)" (부 삭제)
+            text = text.replace('적(Y)  부(N)', '적(Y)', 1)
+        else:
+            # "적(Y)  부(N)" → "부(N)" (적 삭제)
+            text = text.replace('적(Y)  부(N)', '부(N)', 1)
 
-  {_p("")}
-  {_p(f"□ 주요 투자조건")}
-  {_multiline_p(d['conditions_text'])}
-
-  {_p("")}
-  {_p("□ 위약벌 사항 등")}
-  {_multiline_p(d['penalty_text'])}
-
-  {_p("")}
-  {_p("□ 동반투자내역(* 운용사내 타 펀드, 타 운용사 동반 투자내역)")}
-  {_p(d.get('co_investor_rows', '(해당 내용 직접 확인 필요)'))}
-
-  {_p("")}
-  {_p("3. 투자 담당자", bold=True)}
-  {_table_staff(d)}
-
-  {_p("")}
-  {_p("4. 투자기업의 벤처기업 등 해당여부 확인", bold=True)}
-  {_p(f"  - 설립일: {e(d['establishment_date'])}")}
-  {_p("  (벤처기업 확인서, 이노비즈 인증 등은 별도 확인 필요)")}
-
-  {_p("")}
-  {_p(f"작성일: {e(d['date_str'])}")}
-
-  {_mismatch_section(d.get('mismatch_notes', []))}
-
-</hs:sec>'''
-    return xml
+    return text
 
 
-def _p(text: str, bold=False, size=20, color=None):
-    """HWPX 문단 XML을 생성."""
-    e = escape
-    bold_attr = ' fontweight="bold"' if bold else ''
-    color_attr = f' color="#{color}"' if color else ''
-    return f'''<hp:p>
-    <hp:run>
-      <hp:rPr sz="{size}"{bold_attr}{color_attr}/>
-      <hp:t>{e(text)}</hp:t>
-    </hp:run>
-  </hp:p>'''
+def _copy_and_replace(template_path: str, output_path: str, replacements: dict):
+    """양식 HWPX를 복사하고 치환."""
+    with zipfile.ZipFile(template_path, 'r') as zin:
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = zin.read(item.filename)
+
+                if item.filename in ('Contents/section0.xml', 'Preview/PrvText.txt'):
+                    text = data.decode('utf-8', errors='replace')
+                    text = _apply_replacements(text, replacements)
+                    data = text.encode('utf-8')
+
+                if item.filename == 'mimetype':
+                    zout.writestr(item, data, compress_type=zipfile.ZIP_STORED)
+                else:
+                    zout.writestr(item, data)
 
 
-def _multiline_p(text: str):
-    """여러 줄 텍스트를 각각 문단으로."""
-    if not text:
-        return _p("")
-    return "\n".join(_p(line) for line in text.split("\n"))
+# ━━━━━━━━━━━━━━━ 유틸 ━━━━━━━━━━━━━━━
 
-
-def _table_company(d):
-    """투자기업 정보 테이블."""
-    e = escape
-    return f'''<hp:tbl>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>업체명</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['short_name'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>대표이사</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['representative'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>사업자등록번호</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['business_id'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>소재지</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['address'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-  </hp:tbl>'''
-
-
-def _table_investment(d):
-    """투자유형 및 투자금액 테이블."""
-    e = escape
-    return f'''<hp:tbl>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>구 분</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>투자금액</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>투자단가</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>지분율</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['stock_type'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['investment_amount'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['issue_price'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['share_ratio'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>합 계</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['investment_amount'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['issue_price'])}</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['share_ratio'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-  </hp:tbl>'''
-
-
-def _table_staff(d):
-    """투자 담당자 테이블."""
-    e = escape
-    return f'''<hp:tbl>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>발굴자 (기여율)</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['discoverer'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>심사자 (기여율)</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['reviewer'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-    <hp:tr>
-      <hp:tc><hp:p><hp:run><hp:t>사후관리자 (기여율)</hp:t></hp:run></hp:p></hp:tc>
-      <hp:tc><hp:p><hp:run><hp:t>{e(d['post_manager'])}</hp:t></hp:run></hp:p></hp:tc>
-    </hp:tr>
-  </hp:tbl>'''
-
-
-def _mismatch_section(notes):
-    """불일치 사항이 있을 경우 빨간색으로 표시."""
-    if not notes:
+def _fmt_won(val: str) -> str:
+    if not val:
         return ""
-    lines = [_p(""), _p("[※ 투심보고서-계약서 불일치 항목]", bold=True, color="FF0000")]
-    for note in notes:
-        lines.append(_p(f"  - {note}", color="FF0000"))
-    return "\n".join(lines)
+    v = val.replace(',', '').replace('원', '').strip()
+    if v:
+        return f"{int(v):,}원"
+    return val
 
 
-def _write_hwpx(output_path: str, section_xml: str):
-    """HWPX 파일(ZIP+XML)을 생성한다."""
-    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # mimetype (first entry, uncompressed)
-        zf.writestr('mimetype', 'application/hwp+zip', compress_type=zipfile.ZIP_STORED)
+def _check_startup(establishment_date: str) -> str:
+    """설립일 기준 7년 이내인지 확인."""
+    if not establishment_date:
+        return "부(N)"
+    try:
+        # "2017.05.25" or "2017년 5월 25일" 등
+        cleaned = re.sub(r'[년월일\s]', '.', establishment_date).strip('.')
+        parts = [p for p in cleaned.split('.') if p]
+        if len(parts) >= 1:
+            year = int(parts[0])
+            current_year = datetime.now().year
+            if current_year - year <= 7:
+                return "적(Y)"
+    except (ValueError, IndexError):
+        pass
+    return "부(N)"
 
-        # META-INF/manifest.xml
-        manifest = '''<?xml version="1.0" encoding="UTF-8"?>
-<odf:manifest xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
-  <odf:file-entry odf:full-path="/" odf:media-type="application/hwp+zip"/>
-  <odf:file-entry odf:full-path="Contents/content.hpf" odf:media-type="application/xml"/>
-  <odf:file-entry odf:full-path="Contents/header.xml" odf:media-type="application/xml"/>
-  <odf:file-entry odf:full-path="Contents/section0.xml" odf:media-type="application/xml"/>
-</odf:manifest>'''
-        zf.writestr('META-INF/manifest.xml', manifest)
 
-        # Contents/content.hpf
-        content_hpf = '''<?xml version="1.0" encoding="UTF-8"?>
-<hp:HWPDocumentPackage xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
-  xmlns:odf="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"
-  version="1.1">
-  <hp:compatibledocument target="HWP 2022"/>
-</hp:HWPDocumentPackage>'''
-        zf.writestr('Contents/content.hpf', content_hpf)
+def _format_estab_date(estab: str) -> str:
+    """설립일을 "YYYY년 MM월 DD일" 형태로 변환."""
+    if not estab or estab == "0000년 00월 00일":
+        return "0000년 00월 00일"
+    cleaned = re.sub(r'[년월일\s]', '.', estab).strip('.')
+    parts = [p for p in cleaned.split('.') if p]
+    if len(parts) >= 3:
+        return f"{parts[0]}년 {parts[1]}월 {parts[2]}일"
+    elif len(parts) == 2:
+        return f"{parts[0]}년 {parts[1]}월"
+    return estab
 
-        # Contents/header.xml - A4 용지, 여백 설정
-        header_xml = '''<?xml version="1.0" encoding="UTF-8"?>
-<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
-         xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
-         xmlns:hc="http://www.hancom.co.kr/hwpml/2011/content">
-  <hh:beginNum page="1" footnote="1" endnote="1"/>
-  <hh:refList>
-    <hh:fontfaces>
-      <hh:fontface lang="HANGUL">
-        <hh:font id="0" face="함초롬바탕" type="TTF"/>
-      </hh:fontface>
-      <hh:fontface lang="LATIN">
-        <hh:font id="0" face="함초롬바탕" type="TTF"/>
-      </hh:fontface>
-    </hh:fontfaces>
-    <hh:charProperties>
-      <hh:charPr id="0" height="1000" color="0">
-        <hh:fontRef hangul="0" latin="0"/>
-      </hh:charPr>
-    </hh:charProperties>
-    <hh:paraProperties>
-      <hh:paraPr id="0">
-        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
-      </hh:paraPr>
-    </hh:paraProperties>
-  </hh:refList>
-  <hh:secProperties>
-    <hh:secPr>
-      <hh:pageProperty paperWidth="59528" paperHeight="84188" landscape="NARROWLY">
-        <hh:margin header="4252" footer="4252"
-                   left="8504" right="8504" top="5668" bottom="4252" gutter="0"/>
-      </hh:pageProperty>
-    </hh:secPr>
-  </hh:secProperties>
-</hh:head>'''
-        zf.writestr('Contents/header.xml', header_xml)
 
-        # Contents/section0.xml - 본문
-        zf.writestr('Contents/section0.xml', section_xml)
+def _yn(val: str) -> str:
+    """'해당'/'미해당' 등을 '적'/'부'로 변환."""
+    if not val:
+        return "부"
+    v = val.strip()
+    if v in ('해당', '가능', '적합', 'Y', 'O', '있음'):
+        return "적"
+    return "부"
 
-        # settings.xml
-        settings = '''<?xml version="1.0" encoding="UTF-8"?>
-<config:settings xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0">
-  <config:config-item config:name="ViewZoom" config:type="int">100</config:config-item>
-</config:settings>'''
-        zf.writestr('settings.xml', settings)
+
+def _is_before_deadline() -> bool:
+    """현재 날짜가 투자기간 종료일(2029.9.8) 이전인지."""
+    return date.today() < date(2029, 9, 8)
+
+
+def _check_mismatches(cd, rd) -> list:
+    warnings = []
+    def _norm(v):
+        return re.sub(r'[\s,원주%㈜주식회사(주)]', '', str(v or ''))
+    checks = [
+        ("투자금액", rd.investment_amount, _fmt_won(cd.total_investment)),
+        ("투자단가", rd.issue_price, _fmt_won(cd.issue_price)),
+        ("투자방식", rd.stock_type, cd.stock_type),
+    ]
+    for name, rv, cv in checks:
+        if rv and cv and _norm(rv) != _norm(cv):
+            warnings.append(f"{name}: 투심보고서={rv}, 투자계약서={cv}")
+            print(f"[WARNING] {name} 불일치: 투심보고서={rv}, 투자계약서={cv}")
+    return warnings
