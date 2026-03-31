@@ -209,21 +209,70 @@ def _apply_replacements(text: str, replacements: dict) -> str:
 
 
 def _copy_and_replace(template_path: str, output_path: str, replacements: dict):
-    """양식 HWPX를 복사하고 치환."""
+    """양식 HWPX를 복사하고 치환. flag_bits 등 원본 메타데이터 완전 보존."""
+    import struct
+    import shutil
+
+    temp_path = output_path + '.tmp'
+
     with zipfile.ZipFile(template_path, 'r') as zin:
-        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+        modified = {}
+        for fname in ('Contents/section0.xml', 'Preview/PrvText.txt'):
+            text = zin.read(fname).decode('utf-8', errors='replace')
+            text = _apply_replacements(text, replacements)
+            modified[fname] = text.encode('utf-8')
+
+        with zipfile.ZipFile(temp_path, 'w') as zout:
             for item in zin.infolist():
-                data = zin.read(item.filename)
-
-                if item.filename in ('Contents/section0.xml', 'Preview/PrvText.txt'):
-                    text = data.decode('utf-8', errors='replace')
-                    text = _apply_replacements(text, replacements)
-                    data = text.encode('utf-8')
-
-                if item.filename == 'mimetype':
-                    zout.writestr(item, data, compress_type=zipfile.ZIP_STORED)
+                if item.filename in modified:
+                    data = modified[item.filename]
                 else:
-                    zout.writestr(item, data)
+                    data = zin.read(item.filename)
+                zout.writestr(item, data)
+
+    # flag_bits 복원: ZIP 바이너리에서 직접 패치
+    _patch_flag_bits(template_path, temp_path)
+    os.replace(temp_path, output_path)
+
+
+def _patch_flag_bits(template_path: str, target_path: str):
+    """원본 HWPX의 flag_bits를 생성본에 복사. (local + central directory 모두)"""
+    import struct
+
+    with zipfile.ZipFile(template_path) as zt:
+        orig_flags = {item.filename: item.flag_bits for item in zt.infolist()}
+
+    # ZIP 파일 바이너리 읽기
+    with open(target_path, 'rb') as f:
+        data = bytearray(f.read())
+
+    # Local file headers: signature = PK\x03\x04
+    offset = 0
+    while offset < len(data) - 4:
+        sig = struct.unpack_from('<I', data, offset)[0]
+        if sig == 0x04034b50:  # Local file header
+            fname_len = struct.unpack_from('<H', data, offset + 26)[0]
+            extra_len = struct.unpack_from('<H', data, offset + 28)[0]
+            fname = data[offset + 30: offset + 30 + fname_len].decode('utf-8', errors='replace')
+            if fname in orig_flags:
+                struct.pack_into('<H', data, offset + 6, orig_flags[fname])
+            comp_size = struct.unpack_from('<I', data, offset + 18)[0]
+            offset += 30 + fname_len + extra_len + comp_size
+        elif sig == 0x02014b50:  # Central directory header
+            fname_len = struct.unpack_from('<H', data, offset + 28)[0]
+            extra_len = struct.unpack_from('<H', data, offset + 30)[0]
+            comment_len = struct.unpack_from('<H', data, offset + 32)[0]
+            fname = data[offset + 46: offset + 46 + fname_len].decode('utf-8', errors='replace')
+            if fname in orig_flags:
+                struct.pack_into('<H', data, offset + 8, orig_flags[fname])
+            offset += 46 + fname_len + extra_len + comment_len
+        elif sig == 0x06054b50:  # End of central directory
+            break
+        else:
+            offset += 1
+
+    with open(target_path, 'wb') as f:
+        f.write(data)
 
 
 # ━━━━━━━━━━━━━━━ 유틸 ━━━━━━━━━━━━━━━
