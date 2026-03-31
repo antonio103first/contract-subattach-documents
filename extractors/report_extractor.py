@@ -16,6 +16,7 @@ class InvestmentReportData:
     num_employees: str = ""
     business_description: str = ""
     business_registration: str = ""
+    industry_code: str = ""            # 한국표준산업분류코드 (예: C28114)
 
     review_date: str = ""
     committee_date: str = ""
@@ -47,6 +48,23 @@ class InvestmentReportData:
 
     co_investors: list = field(default_factory=list)
     discovery_background: str = ""
+
+    # 별첨2 투자재원검토보고서 (표5 준법사항용)
+    investment_type: str = ""          # 투자구분 (신규발행/구주 등)
+    is_follow_up: str = ""             # 후속투자 여부
+    purpose_transport: str = ""        # 주목적 - 국토교통분야 해당여부
+    purpose_mobility: str = ""         # 주목적 - 혁신성장 모빌리티 분야
+    purpose_south: str = ""            # 주목적 - 산업은행 남부권 전략산업
+    purpose_tcb: str = ""              # 주목적 - TCB Ti-6 등급 이상
+    purpose_tcb_detail: str = ""       # TCB 상세 (등급, 발급일)
+    purpose_ibk: str = ""              # 주목적 - 중소기업은행 거래기업
+
+    # 벤처기업/이노비즈 인증
+    is_venture: str = ""               # 벤처기업 인증 여부
+    venture_expiry: str = ""           # 벤처기업확인서 유효기간
+    is_innobiz: str = ""              # 이노비즈/메인비즈 인증 여부
+    innobiz_expiry: str = ""          # 이노비즈 유효기간
+
     warnings: list = field(default_factory=list)
 
 
@@ -73,6 +91,12 @@ def extract_report_data(filepath: str) -> InvestmentReportData:
         _scan_all_tables(doc.tables, data)
 
     _extract_from_text(full_text, data, doc)
+
+    # 별첨2 투자재원검토보고서 + 벤처/이노비즈 인증
+    if doc:
+        _extract_appendix2(doc.tables, data)
+    _extract_certifications(full_text, data)
+
     return data
 
 
@@ -385,3 +409,99 @@ def _extract_from_pdf_text(full_text: str, data: InvestmentReportData):
     m = re.search(r'사후관리[:\s]*(\S+(?:\s*\(\d+%\))?)', full_text)
     if m:
         data.post_manager = m.group(1)
+
+
+# ━━━━━━━━━━━━━━━ 별첨2 + 인증 ━━━━━━━━━━━━━━━
+
+def _extract_appendix2(tables, data: InvestmentReportData):
+    """별첨2 투자재원검토보고서에서 주목적투자, 투자구분 등을 추출."""
+    for table in tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            row_text = " ".join(cells)
+
+            # 투자구분 (신규발행/구주)
+            if '투자구분' in row_text and not data.investment_type:
+                for c in cells:
+                    if c and '투자구분' not in c:
+                        data.investment_type = c
+                        break
+
+            # 후속투자 여부
+            if '후속투자' in row_text and not data.is_follow_up:
+                for c in cells:
+                    if c and '후속투자' not in c and '항' not in c:
+                        data.is_follow_up = c
+                        break
+
+            # 주목적 - 국토교통분야
+            if '국토교통' in row_text and not data.purpose_transport:
+                for c in cells:
+                    if c and '국토교통' not in c and '주목적' not in c:
+                        data.purpose_transport = c
+                        break
+
+            # 주목적 - 혁신성장 모빌리티
+            if '모빌리티' in row_text and '혁신성장' in row_text and not data.purpose_mobility:
+                for c in cells:
+                    if c and '모빌리티' not in c and '투자대상' not in c:
+                        data.purpose_mobility = c
+                        break
+
+            # 주목적 - 남부권 전략산업
+            if '남부권' in row_text and not data.purpose_south:
+                for c in cells:
+                    if c and '남부권' not in c and '투자대상' not in c:
+                        data.purpose_south = c
+                        break
+
+            # 주목적 - TCB
+            if 'TCB' in row_text or 'Ti-' in row_text:
+                if not data.purpose_tcb:
+                    for c in cells:
+                        if c and 'TCB' not in c and '제61' not in c and '등급' not in c.replace('Ti-',''):
+                            data.purpose_tcb = c
+                            break
+                # TCB 상세 (비고란)
+                if not data.purpose_tcb_detail and len(cells) > 2:
+                    for c in cells:
+                        if 'Ti-' in c or 'TI-' in c:
+                            data.purpose_tcb_detail = c
+                            break
+
+            # 표준산업분류코드
+            if '표준산업' in row_text or ('주요사업' in row_text and not data.industry_code):
+                for c in cells:
+                    m = re.search(r'\(([A-Z]\d{4,5})\)', c)
+                    if m:
+                        data.industry_code = m.group(1)
+                        break
+
+    # industry_code fallback: 회사개요 테이블에서
+    if not data.industry_code:
+        for table in tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    m = re.search(r'\(([A-Z]\d{4,5})\)', cell.text)
+                    if m:
+                        data.industry_code = m.group(1)
+                        return
+
+
+def _extract_certifications(full_text: str, data: InvestmentReportData):
+    """벤처기업/이노비즈 인증 정보를 텍스트에서 추출."""
+    # 벤처기업 인증
+    if re.search(r'벤처기업.*?인증|벤처기업확인서|벤처.*?확인', full_text):
+        data.is_venture = "Y"
+        m = re.search(r'벤처.*?유효기간.*?(\d{4}[\.\-]\d{1,2}[\.\-]\d{1,2})', full_text)
+        if m:
+            data.venture_expiry = m.group(1)
+
+    # 이노비즈/메인비즈
+    if re.search(r'[Ii]nno-?[Bb]iz|이노비즈|기술혁신형', full_text):
+        data.is_innobiz = "Y"
+        m = re.search(r'[Ii]nno.*?유효기간.*?(\d{4}[\.\-]\d{1,2}[\.\-]\d{1,2})', full_text)
+        if m:
+            data.innobiz_expiry = m.group(1)
+    if re.search(r'[Mm]ain-?[Bb]iz|메인비즈|경영혁신형', full_text):
+        data.is_innobiz = data.is_innobiz or "Y"
