@@ -282,22 +282,61 @@ def _apply_replacements(text: str, replacements: dict) -> str:
         else:
             text = text.replace('적(Y)  부(N)', '부(N)', 1)
 
-    # 5. 표5 적/부 순서 치환
+    # 5. 표5 실제 칼럼 빈 셀에 적/부 값 채우기
     table5_yn = replacements.get('_table5_yn', [])
-    for yn_val in table5_yn:
-        # 양식에서 표5의 적/부는 단독 >적< 또는 >부< 텍스트 노드
-        # 순서대로 하나씩 치환 (값이 동일하면 유지, 다르면 교체)
-        # 적→부 또는 부→적 으로 바꿔야 하는 경우만 처리
-        pass  # 표5는 양식에 이미 적/부가 기본값으로 들어있으므로 변경 불필요한 경우가 많음
-        # 개별 항목별로 정밀 치환이 필요하면 별도 로직 필요
+    if table5_yn:
+        t5_start = text.find('5. 준법사항 확인')
+        if t5_start >= 0:
+            before = text[:t5_start]
+            after = text[t5_start:]
 
-    # 6. 적색 주석 추가 (확인 필요 사항)
+            # tc 단위로 분리하여 colAddr="2"인 빈 셀만 찾기
+            tc_pattern = re.compile(r'(<hp:tc\b[^>]*>)(.*?)(</hp:tc>)', re.DOTALL)
+            yn_idx = 0
+
+            def _fill_cell(m):
+                nonlocal yn_idx
+                tc_open = m.group(1)
+                tc_body = m.group(2)
+                tc_close = m.group(3)
+
+                # colAddr="2" 이고 빈 셀 (자체닫기 run)인 경우만
+                if 'colAddr="2"' not in tc_body:
+                    return m.group(0)
+                row_m = re.search(r'rowAddr="(\d+)"', tc_body)
+                row = int(row_m.group(1)) if row_m else -1
+                if row < 2:
+                    return m.group(0)
+
+                # 자체닫기 run이 있는지 확인
+                empty_run = re.search(r'<hp:run charPrIDRef="(\d+)"/>', tc_body)
+                if not empty_run:
+                    return m.group(0)
+
+                # 이미 <hp:t>가 있으면 건너뜀
+                if '<hp:t>' in tc_body:
+                    return m.group(0)
+
+                if yn_idx >= len(table5_yn):
+                    return m.group(0)
+
+                val = table5_yn[yn_idx]
+                yn_idx += 1
+
+                old_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"/>'
+                new_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"><hp:t>{val}</hp:t></hp:run>'
+                tc_body = tc_body.replace(old_run, new_run, 1)
+
+                return tc_open + tc_body + tc_close
+
+            after = tc_pattern.sub(_fill_cell, after)
+            text = before + after
+
+    # 6. 적색 주석 추가 (확인 필요 사항) - 텍스트만 삽입, 색상은 일반
     red_notes = replacements.get('_red_notes', {})
     for keyword, note in red_notes.items():
         if keyword in text:
             safe_note = _xml_safe(note)
-            # XML 텍스트 노드에 주석 추가: 키워드 뒤에 적색 텍스트 삽입
-            # PrvText에서는 단순 텍스트 추가
             text = text.replace(keyword, keyword + ' ' + safe_note, 1)
 
     return text
