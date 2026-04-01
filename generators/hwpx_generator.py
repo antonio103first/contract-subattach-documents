@@ -164,12 +164,30 @@ def _build_all_replacements(cd, rd) -> dict:
         False,           # 프로젝트 투자
     ]
 
-    # ── 적색 주석 (확인 필요 사항) ──
+    # ── 비고란 적색 주석 (colAddr=3 빈 셀에 순서대로 삽입) ──
+    # 법령상 비고란 빈 셀 순서: row2, row3, row8, row9, row10, row12
+    legal_bigo = [
+        "",                          # row2: 자기/제3자 (빈칸)
+        "[확인 필요: 중소기업 여부]",  # row3: 상호출자
+        "",                          # row8: 조합명의 (빈칸)
+        "",                          # row9: 차입 (빈칸)
+        "",                          # row10: 별도조건 (빈칸)
+        "[별도 확인 필요]",            # row12: 프로젝트
+    ]
+    # 규약상 비고란 빈 셀: row11(해외), row12~13, row14~18 등
+    regulatory_bigo = [
+        "",                          # row11: 해외투자
+        "",                          # row12
+        "",                          # row13
+        "[담당자 확인 필요]",          # row14: 금지행위
+        "",                          # row15: 투자기간
+        "",                          # row16: 납입금액
+        "[담당자 추가확인 필요]",      # row17: 이해상충
+        "",                          # row18: 투심위
+    ]
+
+    # ── 텍스트 기반 주석 (기존 방식 유지) ──
     red_notes = {
-        '투자기업의 상호출자제한기업집단 소속 여부': ' [확인 필요: 중소기업 여부]',
-        '2개 이상 기업이 프로젝트': ' [별도 확인 필요]',
-        '제34조 제4항의 후행투자 여부': ' [담당자 확인 필요]',
-        '제34조 제10항에 의한 금지행위 여부': ' [담당자 추가확인 필요]',
         '(상세하게 발굴경위 기재)': rd.discovery_background or '(확인 필요)',
     }
     if rd.purpose_tcb_detail:
@@ -211,6 +229,7 @@ def _build_all_replacements(cd, rd) -> dict:
         '_yn_markers': [startup_yn, venture_yn, innobiz_yn],
         '_table5_yn': table5_yn,
         '_invest_method_checks': invest_method_checks,
+        '_bigo_notes': legal_bigo + regulatory_bigo,  # 비고란 빈 셀 주석
         '_red_notes': red_notes,
     }
 
@@ -350,7 +369,54 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             after = tc_pattern.sub(_fill_cell, after)
             text = before + after
 
-    # 6. 적색 주석 추가 (확인 필요 사항) - 텍스트만 삽입, 색상은 일반
+    # 6. 비고란(colAddr=3) 빈 셀에 적색 주석 채우기
+    bigo_notes = replacements.get('_bigo_notes', [])
+    if bigo_notes:
+        t5_start = text.find('5. 준법사항 확인')
+        if t5_start >= 0:
+            before5 = text[:t5_start]
+            after5 = text[t5_start:]
+
+            tc_pattern = re.compile(r'(<hp:tc\b[^>]*>)(.*?)(</hp:tc>)', re.DOTALL)
+            bigo_idx = 0
+
+            def _fill_bigo(m):
+                nonlocal bigo_idx
+                tc_open = m.group(1)
+                tc_body = m.group(2)
+                tc_close = m.group(3)
+
+                if 'colAddr="3"' not in tc_body:
+                    return m.group(0)
+                row_m = re.search(r'rowAddr="(\d+)"', tc_body)
+                row = int(row_m.group(1)) if row_m else -1
+                if row < 2:
+                    return m.group(0)
+
+                empty_run = re.search(r'<hp:run charPrIDRef="(\d+)"/>', tc_body)
+                if not empty_run:
+                    return m.group(0)
+                if '<hp:t>' in tc_body:
+                    return m.group(0)
+
+                if bigo_idx >= len(bigo_notes):
+                    return m.group(0)
+
+                note = bigo_notes[bigo_idx]
+                bigo_idx += 1
+
+                if note:
+                    safe_note = _xml_safe(note)
+                    old_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"/>'
+                    new_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"><hp:t>{safe_note}</hp:t></hp:run>'
+                    tc_body = tc_body.replace(old_run, new_run, 1)
+
+                return tc_open + tc_body + tc_close
+
+            after5 = tc_pattern.sub(_fill_bigo, after5)
+            text = before5 + after5
+
+    # 7. 텍스트 기반 주석 (발굴경위, TCB등급, 투심위예정일)
     red_notes = replacements.get('_red_notes', {})
     for keyword, note in red_notes.items():
         if keyword in text:
