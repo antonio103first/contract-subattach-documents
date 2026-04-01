@@ -112,13 +112,16 @@ def _build_all_replacements(cd, rd) -> dict:
     # 투자기간 이내 (2029.9.8 이전)
     invest_in_period = "적" if _is_before_deadline() else "부"
 
-    # ── 표5 준법사항: 적/부 순서 목록 (양식의 순서대로) ──
-    # 양식 text node 순서: 106,109,111,122,141,168,173,175,179,181,187,189
-    #   → 법령상: 부,부,부,부,부,부,부,부,부,적,적,부
-    # 그 다음 규약상: 200,231,244,254,268,279,287,293,294,307,308,311,312,314,323,328,333,339,340,345,349
+    # ── 표5 준법사항: 적/부 순서 목록 (양식의 실제 칼럼 빈 셀 순서) ──
     committee_date = rd.committee_date or "(확인 필요)"
+
+    # 투자방법 판단
+    stock_lower = (cd.stock_type or rd.stock_type or "").replace(" ", "")
+    is_stock_type = any(kw in stock_lower for kw in ['보통주', '우선주', 'RCPS'])
+    is_cb_bw = any(kw in stock_lower for kw in ['CB', 'BW', '전환사채', '신주인수권'])
+
     table5_yn = [
-        # ── 법령상 투자제한 ──
+        # ── 법령상 투자제한 (12개) ──
         "부",    # 자기 또는 제3자의 이익을 위한 조합 재산 사용 여부
         "부",    # 투자기업의 상호출자제한기업집단 소속 여부
         "부",    # 투자 제한업종 해당 여부
@@ -126,53 +129,52 @@ def _build_all_replacements(cd, rd) -> dict:
         "부",    # 취득 대상이 이해관계인이 발행하거나 소유한 주식
         "부",    # 이해관계인에 대한 신용공여 행위 여부
         "부",    # 조합 명의로 제3자를 위하여 주식 취득/자금 중개
-        "부",    # 조합이 투자한 업체로부터 차입 또는 자산 매각
+        "부",    # 조합이 투자한 업체로부터 차입
         "부",    # 투자계약서에 기재된 조건 외에 별도 투자조건 설정
         "적" if is_domestic else "부",  # 해외투자 요건 준수 여부
-        "적",    # 2개 이상 기업 프로젝트 → [확인 필요]
+        "적",    # 2개 이상 기업 프로젝트 (확인 필요)
         "부",    # 기타 법령 위반 여부
         # ── 규약상 투자제한 ──
         "적",    # 제34조 제1항의 법상 의무투자 해당여부
-        # 투자의무1~5 (제35조, 제61조)
-        purpose_transport,  # 투자의무1 - 국토교통분야
-        purpose_mobility,   # 투자의무2 - 혁신성장 모빌리티
-        purpose_south,      # 투자의무3 - 남부권 전략산업
-        "적",               # 투자의무4 - IBK 기업거래
-        purpose_tcb,        # 투자의무5 - TCB Ti-6 등급
+        purpose_transport,   # 제35조 제1항 제1호 (국토교통분야)
+        purpose_mobility,    # 제35조 제1항 제2호 (혁신성장 모빌리티)
+        purpose_south,       # 제35조 제1항 제3호 (남부권 전략산업)
+        "적",                # 제61조 제1항 제1호 (IBK 기업거래)
+        purpose_tcb,         # 제61조 제1항 제2호 (TCB Ti-6 등급)
         "적",    # 제34조 제3항 동일기업 동일 프로젝트
-        "적",    # 제34조 제4항 후행투자 (적 기본, 확인 주석)
-        "부",    # 제34조 제4항 후행투자 (부 칸)
-        "적",    # 제34조 제2항 구주 등 투자 (적 기본)
-        "부" if is_new_stock else "적",  # 제34조 제2항 구주 (신규면 부)
-        "적" if is_domestic else "부",   # 제34조 제2항 해외투자 아님
-        "부" if is_domestic else "적",   # 해외투자 부 칸
+        "적",    # 제34조 제4항 후행투자 (담당자 확인)
+        "부" if is_new_stock else "적",  # 제34조 제2항 구주
+        "부" if is_domestic else "적",   # 제34조 제2항 해외투자
         "부",    # 제34조 제8항 자금 대여 방식
-        "부",    # 제34조 제10항 금지행위
+        "부",    # 제34조 제10항 금지행위 (담당자 확인)
         invest_in_period,  # 제4조 제26호 투자기간 이내
         "적",    # 제8조 제5항 납입금액 충족
-        "적",    # 제34조의2 이해상충 검토 (적 기본)
-        "부",    # 이해상충 부 칸
+        "부",    # 제34조의2 이해상충 검토
         "적",    # 제37조 투자심의위원회 부의
         "적",    # 제61조 제14항 볼커룰
     ]
 
-    # ── 확인 필요 주석 (적색 텍스트) ──
-    # 양식에서 특정 위치 뒤에 적색 주석을 추가해야 하는 항목들
-    red_notes = {}
-    # 상호출자제한 → 중소기업 여부 확인
-    red_notes['투자기업의 상호출자제한기업집단 소속 여부'] = '[확인 필요: 중소기업 여부]'
-    # 2개 이상 기업 프로젝트
-    red_notes['2개 이상 기업이 프로젝트'] = '[별도 확인 필요]'
-    # 후행투자
-    red_notes['제34조 제4항의 후행투자 여부'] = '[담당자 확인 필요]'
-    # 금지행위
-    red_notes['제34조 제10항에 의한 금지행위 여부'] = '[담당자 추가확인 필요]'
-    # TCB 등급 상세
+    # ── 투자방법 (O) 체크 ──
+    # 양식의 (   ) 5개: 신규주식, 무담보사채, 조건부, 창업자주식, 프로젝트
+    invest_method_checks = [
+        is_stock_type,   # 신규로 발행되는 주식의 인수
+        is_cb_bw,        # 무담보전환사채 등
+        False,           # 조건부지분인수계약
+        False,           # 개인/개인투자조합 3년 이상 보유 창업자 주식
+        False,           # 프로젝트 투자
+    ]
+
+    # ── 적색 주석 (확인 필요 사항) ──
+    red_notes = {
+        '투자기업의 상호출자제한기업집단 소속 여부': ' [확인 필요: 중소기업 여부]',
+        '2개 이상 기업이 프로젝트': ' [별도 확인 필요]',
+        '제34조 제4항의 후행투자 여부': ' [담당자 확인 필요]',
+        '제34조 제10항에 의한 금지행위 여부': ' [담당자 추가확인 필요]',
+        '(상세하게 발굴경위 기재)': rd.discovery_background or '(확인 필요)',
+    }
     if rd.purpose_tcb_detail:
         red_notes['0000.00.00 발급'] = rd.purpose_tcb_detail
-    # 투심위 날짜
-    if committee_date:
-        red_notes['년  월 일'] = committee_date
+    red_notes['년  월 일'] = committee_date
 
     return {
         '_simple': {
@@ -208,6 +210,7 @@ def _build_all_replacements(cd, rd) -> dict:
         },
         '_yn_markers': [startup_yn, venture_yn, innobiz_yn],
         '_table5_yn': table5_yn,
+        '_invest_method_checks': invest_method_checks,
         '_red_notes': red_notes,
     }
 
@@ -281,6 +284,21 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             text = text.replace('적(Y)  부(N)', '적(Y)', 1)
         else:
             text = text.replace('적(Y)  부(N)', '부(N)', 1)
+
+    # 4.5 투자방법 (O) 체크 - "(   )" 를 "(O)" 또는 유지
+    method_checks = replacements.get('_invest_method_checks', [])
+    for i, checked in enumerate(method_checks):
+        if checked:
+            text = text.replace('(   )', '(O)', 1)
+        else:
+            # 체크 안된 항목도 한번 건너뜀 (순서 유지)
+            idx = text.find('(   )')
+            if idx >= 0:
+                pass  # 그대로 유지
+            # 다음 (   )로 이동하기 위해 임시 마킹 후 복원
+            text = text.replace('(   )', '(___SKIP___)', 1)
+    # 복원
+    text = text.replace('(___SKIP___)', '(   )')
 
     # 5. 표5 실제 칼럼 빈 셀에 적/부 값 채우기
     table5_yn = replacements.get('_table5_yn', [])
