@@ -92,6 +92,13 @@ def extract_report_data(filepath: str) -> InvestmentReportData:
 
     _extract_from_text(full_text, data, doc)
 
+    # 별첨1 주요투자조건 요약서 (우선 참조)
+    if doc:
+        _extract_appendix1_summary(doc.tables, data)
+        # 동반투자 테이블
+        if not data.co_investors:
+            _extract_co_investors_table(doc.tables, data)
+
     # 별첨2 투자재원검토보고서 + 벤처/이노비즈 인증
     if doc:
         _extract_appendix2(doc.tables, data)
@@ -412,6 +419,129 @@ def _extract_from_pdf_text(full_text: str, data: InvestmentReportData):
 
 
 # ━━━━━━━━━━━━━━━ 별첨2 + 인증 ━━━━━━━━━━━━━━━
+
+def _extract_appendix1_summary(tables, data: InvestmentReportData):
+    """별첨1 주요투자조건 요약서에서 투자조건을 우선 추출."""
+    for table in tables:
+        first_row_text = " ".join(c.text.strip() for c in table.rows[0].cells) if table.rows else ""
+        if '투자구분' not in first_row_text and '투자형태' not in first_row_text:
+            continue
+        # 주당 인수가격이 있는지 확인 (별첨1 특징)
+        all_text = " ".join(c.text.strip() for row in table.rows for c in row.cells)
+        if '주당 인수가격' not in all_text and '인수가격' not in all_text:
+            continue
+
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            row_text = " ".join(cells)
+
+            # 투자구분 (신규발행/구주)
+            if '투자구분' in row_text:
+                for i, c in enumerate(cells):
+                    if '투자구분' in c and i + 1 < len(cells):
+                        data.investment_type = cells[i + 1]
+                        break
+
+            # 투자형태 (상환전환우선주 등) - 별첨1 우선
+            if '투자형태' in row_text and not data.stock_type:
+                for i, c in enumerate(cells):
+                    if '투자형태' in c and i + 1 < len(cells):
+                        val = cells[i + 1].strip()
+                        # RCPS, CPS 등 약어도 풀네임으로 변환
+                        if val == 'RCPS' or '상환전환' in val:
+                            data.stock_type = '상환전환우선주'
+                        elif val == 'CPS' or '전환우선' in val:
+                            data.stock_type = '전환우선주'
+                        elif val:
+                            data.stock_type = val
+                        break
+
+            # 주당 인수가격 → 투자단가
+            if ('주당 인수가격' in row_text or '인수가격' in row_text) and not data.issue_price:
+                for i, c in enumerate(cells):
+                    if '인수가격' in c and i + 1 < len(cells):
+                        data.issue_price = cells[i + 1].strip()
+                        break
+
+            # 인수 주식수
+            if '인수 주식수' in row_text and not data.total_shares:
+                for i, c in enumerate(cells):
+                    if '인수 주식수' in c and i + 1 < len(cells):
+                        data.total_shares = cells[i + 1].strip()
+                        break
+
+            # 당사 투자금액
+            if '당사 투자금액' in row_text and not data.investment_amount:
+                for i, c in enumerate(cells):
+                    if '당사 투자금액' in c and i + 1 < len(cells):
+                        data.investment_amount = cells[i + 1].strip()
+                        break
+
+            # 기업가치
+            if 'Pre' in row_text:
+                for i, c in enumerate(cells):
+                    if 'Pre' in c and i + 1 < len(cells):
+                        data.pre_value = cells[i + 1].strip()
+                    if 'Post' in c and i + 1 < len(cells):
+                        data.post_value = cells[i + 1].strip()
+
+            # 주요조건
+            if '주요조건' in row_text:
+                for c in reversed(cells):
+                    if c and '주요조건' not in c and len(c) > 10:
+                        # 주요조건 텍스트에서 세부 내용 파싱
+                        _parse_conditions_text(c, data)
+                        break
+
+        # 동반투자 테이블 (별첨1 바로 다음에 있는 경우가 많음)
+        break  # 첫 번째 매칭 테이블만 처리
+
+
+def _parse_conditions_text(text: str, data: InvestmentReportData):
+    """주요조건 텍스트에서 존속기간, 상환조건, 전환조건 등을 파싱."""
+    # 존속기간
+    m = re.search(r'존속기간\s*(\d+)\s*년', text)
+    if m and not data.duration:
+        data.duration = m.group(1) + "년"
+
+    # 상환조건
+    m = re.search(r'(\d+)\s*년.*?(?:후|경과).*?상환', text)
+    if m and not data.redemption_terms:
+        years = m.group(1)
+        ytm = re.search(r'YTM\s*(\d+)\s*%', text)
+        rate = ytm.group(1) if ytm else ""
+        data.redemption_terms = f"{years}년후부터 상환청구 가능" + (f", 연복리 {rate}%" if rate else "")
+
+    # Refixing
+    m = re.search(r'IPO/M&?A.*?(\d+)\s*%', text)
+    if m and not data.refixing_terms:
+        data.refixing_terms = f"IPO/M&A {m.group(1)}%"
+
+
+def _extract_co_investors_table(tables, data: InvestmentReportData):
+    """동반투자 테이블에서 투자기관/금액/형태 추출."""
+    for table in tables:
+        first_text = " ".join(c.text.strip() for c in table.rows[0].cells) if table.rows else ""
+        if '투자기관' not in first_text:
+            continue
+
+        for row in table.rows[1:]:
+            cells = [cell.text.strip() for cell in row.cells]
+            if '합계' in " ".join(cells) or '합 계' in " ".join(cells):
+                break
+            if len(cells) >= 3:
+                names = cells[0].split('\n') if cells[0] else []
+                amounts = cells[1].split('\n') if len(cells) > 1 else []
+                # 케이런 자기 건은 제외
+                for k, name in enumerate(names):
+                    name = name.strip()
+                    if not name or '케이런' in name:
+                        continue
+                    amt = amounts[k].strip() if k < len(amounts) else ""
+                    if amt:
+                        data.co_investors.append((name, amt, ""))
+        break
+
 
 def _extract_appendix2(tables, data: InvestmentReportData):
     """별첨2 투자재원검토보고서에서 주목적투자, 투자구분 등을 추출."""
