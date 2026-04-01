@@ -314,15 +314,27 @@ def _apply_replacements(text: str, replacements: dict) -> str:
         text = re.sub(r'>%<', '>' + _xml_safe(t2['ratio']) + '<', text, count=1)
 
     # 4. 표4 적(Y)/부(N) 치환
-    # 적(Y)와 부(N)은 별도 <hp:t> 태그에 있음
-    # 선택된 값만 남기고 다른 것은 빈 텍스트로
+    # 같은 셀 내에 적(Y)와 부(N)이 별도 <hp:p> 태그에 있음
+    # 선택된 값 → 적색(charPrIDRef=156), 비선택 값 → 텍스트 제거
     for yn_val in yn_markers:
         if '적' in yn_val:
-            # 적(Y)는 유지, 다음 부(N)은 제거
-            text = re.sub(r'(>적\(Y\)<.*?)>부\(N\)<', r'\1><', text, count=1, flags=re.DOTALL)
+            # 적(Y)를 적색으로 표시
+            text = text.replace(
+                'charPrIDRef="52"><hp:t>적(Y)</hp:t>',
+                f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"><hp:t>적(Y)</hp:t>',
+                1
+            )
+            # 부(N) 텍스트 제거
+            text = text.replace('>부(N)</hp:t>', '></hp:t>', 1)
         else:
-            # 적(Y)는 제거, 부(N)은 유지
-            text = re.sub(r'>적\(Y\)<(.*?>부\(N\)<)', r'><\1', text, count=1, flags=re.DOTALL)
+            # 부(N)를 적색으로 표시
+            text = text.replace(
+                'charPrIDRef="52"><hp:t>부(N)</hp:t>',
+                f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"><hp:t>부(N)</hp:t>',
+                1
+            )
+            # 적(Y) 텍스트 제거
+            text = text.replace('>적(Y)</hp:t>', '></hp:t>', 1)
 
     # 4.5 투자방법 (O) 체크 - "(   )" 를 "(O)" 또는 유지
     method_checks = replacements.get('_invest_method_checks', [])
@@ -437,20 +449,22 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             after5 = tc_pattern.sub(_fill_bigo, after5)
             text = before5 + after5
 
-    # 7. 담당자 확인 필요 행 → 해당 행의 모든 charPrIDRef를 적색(156)으로 변경
+    # 7. 담당자 확인 필요 행 → 해당 행 전체 <hp:tr>의 charPrIDRef를 적색(156)으로 변경
     red_full_rows = replacements.get('_red_full_rows', [])
     for keyword in red_full_rows:
         idx = text.find(keyword)
         if idx < 0:
             continue
-        # 키워드가 포함된 <hp:tc> 태그의 부모 <hp:tr> 찾기
-        # 해당 키워드 근처 500자 범위의 모든 charPrIDRef를 156으로 변경
-        start = max(0, idx - 200)
-        end = min(len(text), idx + len(keyword) + 800)
-        chunk = text[start:end]
-        # 해당 영역의 모든 charPrIDRef="숫자" → charPrIDRef="156"
-        modified_chunk = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"', chunk)
-        text = text[:start] + modified_chunk + text[end:]
+        # 키워드가 포함된 <hp:tr> 전체를 찾기
+        # <hp:tr> 시작점 찾기 (키워드 앞쪽으로 탐색)
+        tr_start = text.rfind('<hp:tr', 0, idx)
+        tr_end = text.find('</hp:tr>', idx)
+        if tr_start >= 0 and tr_end >= 0:
+            tr_end += len('</hp:tr>')
+            tr_chunk = text[tr_start:tr_end]
+            # 해당 행의 모든 charPrIDRef를 적색으로 변경
+            modified_tr = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"', tr_chunk)
+            text = text[:tr_start] + modified_tr + text[tr_end:]
 
     # 8. 텍스트 기반 주석 (발굴경위, TCB등급, 투심위예정일)
     red_notes = replacements.get('_red_notes', {})
