@@ -165,33 +165,48 @@ def _build_all_replacements(cd, rd) -> dict:
     ]
 
     # ── 비고란 적색 주석 (colAddr=3 빈 셀에 순서대로 삽입) ──
-    # 법령상 비고란 빈 셀 순서: row2, row3, row8, row9, row10, row12
     legal_bigo = [
-        "",                          # row2: 자기/제3자 (빈칸)
+        "",                          # row2: 자기/제3자
         "[확인 필요: 중소기업 여부]",  # row3: 상호출자
-        "",                          # row8: 조합명의 (빈칸)
-        "",                          # row9: 차입 (빈칸)
-        "",                          # row10: 별도조건 (빈칸)
+        "",                          # row8: 조합명의
+        "",                          # row9: 차입
+        "",                          # row10: 별도조건
         "[별도 확인 필요]",            # row12: 프로젝트
     ]
-    # 규약상 비고란 빈 셀: row11(해외), row12~13, row14~18 등
     regulatory_bigo = [
         "",                          # row11: 해외투자
         "",                          # row12
         "",                          # row13
-        "[담당자 확인 필요]",          # row14: 금지행위
+        "",                          # row14: 금지행위 (전체 적색 처리)
         "",                          # row15: 투자기간
         "",                          # row16: 납입금액
-        "[담당자 추가확인 필요]",      # row17: 이해상충
+        "",                          # row17: 이해상충 (전체 적색 처리)
         "",                          # row18: 투심위
     ]
 
-    # ── 텍스트 기반 주석 (기존 방식 유지) ──
+    # ── 담당자 확인 필요 → 해당 행 전체를 적색으로 표시할 항목 키워드 ──
+    red_full_rows = [
+        '제34조 제4항의 후행투자 여부',
+        '제34조 제10항에 의한 금지행위 여부',
+        '제34조의 2 제1항의 이해상충여부 검토 여부',
+        '제61조 제14항의 볼커룰',
+    ]
+
+    # ── 투자의무4 비고란 주석 ──
+    # 제61조 제1항 제1호 → "별도 확인 필요" 적색 표시
+    # (이 항목은 비고란이 이미 텍스트가 있으므로 텍스트 기반 주석으로 처리)
+
+    # ── 텍스트 기반 주석 ──
     red_notes = {
         '(상세하게 발굴경위 기재)': rd.discovery_background or '(확인 필요)',
     }
-    if rd.purpose_tcb_detail:
-        red_notes['0000.00.00 발급'] = rd.purpose_tcb_detail
+    # TCB 등급 상세 (비고란) - "TI-  (NICE..." → "Ti-3등급(2025.8.28발급)"
+    tcb_detail = rd.purpose_tcb_detail or ""
+    if tcb_detail:
+        # "TI-3 등급(2025.8.28 발급)" 형태로 정리
+        red_notes['0000.00.00 발급'] = tcb_detail
+    # 투자의무4 비고란에 "별도 확인 필요" (텍스트 기반 - 이미 채워진 비고란에 추가)
+    # 투심위 예정일
     red_notes['년  월 일'] = committee_date
 
     return {
@@ -229,7 +244,8 @@ def _build_all_replacements(cd, rd) -> dict:
         '_yn_markers': [startup_yn, venture_yn, innobiz_yn],
         '_table5_yn': table5_yn,
         '_invest_method_checks': invest_method_checks,
-        '_bigo_notes': legal_bigo + regulatory_bigo,  # 비고란 빈 셀 주석
+        '_bigo_notes': legal_bigo + regulatory_bigo,
+        '_red_full_rows': red_full_rows,  # 전체 적색 표시할 행 키워드
         '_red_notes': red_notes,
     }
 
@@ -297,12 +313,16 @@ def _apply_replacements(text: str, replacements: dict) -> str:
     if t2.get('ratio'):
         text = re.sub(r'>%<', '>' + _xml_safe(t2['ratio']) + '<', text, count=1)
 
-    # 4. 표4 적(Y)/부(N) 치환 - 순서대로 처리
+    # 4. 표4 적(Y)/부(N) 치환
+    # 적(Y)와 부(N)은 별도 <hp:t> 태그에 있음
+    # 선택된 값만 남기고 다른 것은 빈 텍스트로
     for yn_val in yn_markers:
         if '적' in yn_val:
-            text = text.replace('적(Y)  부(N)', '적(Y)', 1)
+            # 적(Y)는 유지, 다음 부(N)은 제거
+            text = re.sub(r'(>적\(Y\)<.*?)>부\(N\)<', r'\1><', text, count=1, flags=re.DOTALL)
         else:
-            text = text.replace('적(Y)  부(N)', '부(N)', 1)
+            # 적(Y)는 제거, 부(N)은 유지
+            text = re.sub(r'>적\(Y\)<(.*?>부\(N\)<)', r'><\1', text, count=1, flags=re.DOTALL)
 
     # 4.5 투자방법 (O) 체크 - "(   )" 를 "(O)" 또는 유지
     method_checks = replacements.get('_invest_method_checks', [])
@@ -417,7 +437,22 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             after5 = tc_pattern.sub(_fill_bigo, after5)
             text = before5 + after5
 
-    # 7. 텍스트 기반 주석 (발굴경위, TCB등급, 투심위예정일)
+    # 7. 담당자 확인 필요 행 → 해당 행의 모든 charPrIDRef를 적색(156)으로 변경
+    red_full_rows = replacements.get('_red_full_rows', [])
+    for keyword in red_full_rows:
+        idx = text.find(keyword)
+        if idx < 0:
+            continue
+        # 키워드가 포함된 <hp:tc> 태그의 부모 <hp:tr> 찾기
+        # 해당 키워드 근처 500자 범위의 모든 charPrIDRef를 156으로 변경
+        start = max(0, idx - 200)
+        end = min(len(text), idx + len(keyword) + 800)
+        chunk = text[start:end]
+        # 해당 영역의 모든 charPrIDRef="숫자" → charPrIDRef="156"
+        modified_chunk = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"', chunk)
+        text = text[:start] + modified_chunk + text[end:]
+
+    # 8. 텍스트 기반 주석 (발굴경위, TCB등급, 투심위예정일)
     red_notes = replacements.get('_red_notes', {})
     for keyword, note in red_notes.items():
         if keyword in text:
