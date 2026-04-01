@@ -408,7 +408,8 @@ def _apply_replacements(text: str, replacements: dict) -> str:
                 if note:
                     safe_note = _xml_safe(note)
                     old_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"/>'
-                    new_run = f'<hp:run charPrIDRef="{empty_run.group(1)}"><hp:t>{safe_note}</hp:t></hp:run>'
+                    # 적색+기울임 charPr(id=156) 사용
+                    new_run = f'<hp:run charPrIDRef="{RED_ITALIC_CHARPR_ID}"><hp:t>{safe_note}</hp:t></hp:run>'
                     tc_body = tc_body.replace(old_run, new_run, 1)
 
                 return tc_open + tc_body + tc_close
@@ -435,10 +436,17 @@ def _copy_and_replace(template_path: str, output_path: str, replacements: dict):
 
     with zipfile.ZipFile(template_path, 'r') as zin:
         modified = {}
+
+        # section0.xml, PrvText.txt 치환
         for fname in ('Contents/section0.xml', 'Preview/PrvText.txt'):
             text = zin.read(fname).decode('utf-8', errors='replace')
             text = _apply_replacements(text, replacements)
             modified[fname] = text.encode('utf-8')
+
+        # header.xml에 적색+기울임 charPr 추가 (id=156)
+        header = zin.read('Contents/header.xml').decode('utf-8', errors='replace')
+        header = _add_red_italic_charpr(header)
+        modified['Contents/header.xml'] = header.encode('utf-8')
 
         with zipfile.ZipFile(temp_path, 'w') as zout:
             for item in zin.infolist():
@@ -494,6 +502,32 @@ def _patch_flag_bits(template_path: str, target_path: str):
 
 
 # ━━━━━━━━━━━━━━━ 유틸 ━━━━━━━━━━━━━━━
+
+RED_ITALIC_CHARPR_ID = "156"
+
+
+def _add_red_italic_charpr(header_xml: str) -> str:
+    """header.xml에 적색+기울임 charPr id=156을 추가."""
+    if f'id="{RED_ITALIC_CHARPR_ID}"' in header_xml:
+        return header_xml  # 이미 존재
+
+    # 기존 charPr id=22 (표5 기본 글자속성)를 복사하여 적색+기울임으로 수정
+    import re
+    m = re.search(r'(<hh:charPr\s+id="22".*?</hh:charPr>)', header_xml, re.DOTALL)
+    if not m:
+        return header_xml
+
+    base = m.group(1)
+    # id 변경, textColor를 적색으로, italic 추가
+    new_charpr = base.replace('id="22"', f'id="{RED_ITALIC_CHARPR_ID}"')
+    new_charpr = new_charpr.replace('textColor="#000000"', 'textColor="#FF0000"')
+    # italic 속성 추가 (height 뒤에)
+    new_charpr = new_charpr.replace('useFontSpace=', 'italic="1" useFontSpace=')
+
+    # </hh:charProperties> 앞에 삽입
+    header_xml = header_xml.replace('</hh:charProperties>', new_charpr + '\n</hh:charProperties>')
+    return header_xml
+
 
 def _xml_safe(text: str) -> str:
     """XML 특수문자를 이스케이프한다. 이미 이스케이프된 것은 건너뜀."""
