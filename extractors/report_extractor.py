@@ -586,18 +586,20 @@ def _extract_appendix2(tables, data: InvestmentReportData):
                         break
 
             # 주목적 - TCB
-            if 'TCB' in row_text or 'Ti-' in row_text:
+            if ('TCB' in row_text or 'Ti-' in row_text or 'TI-' in row_text) and '투자대상' not in row_text:
                 if not data.purpose_tcb:
                     for c in cells:
-                        if c and 'TCB' not in c and '제61' not in c and '등급' not in c.replace('Ti-',''):
-                            data.purpose_tcb = c
+                        c_clean = c.strip()
+                        if c_clean in ('해당', '미해당', 'O', 'X', '가능', '불가'):
+                            data.purpose_tcb = c_clean
                             break
-                # TCB 상세 (비고란)
-                if not data.purpose_tcb_detail and len(cells) > 2:
-                    for c in cells:
-                        if 'Ti-' in c or 'TI-' in c:
-                            data.purpose_tcb_detail = c
-                            break
+                # TCB 상세 - "TI-3 등급(2025.8.28 발급)" 형태
+                # 반드시 "TI-숫자" + "발급" or "등급" 패턴이어야 함
+                for c in cells:
+                    m_tcb = re.search(r'TI-(\d+)\s*등급', c)
+                    if m_tcb:
+                        data.purpose_tcb_detail = c.strip()
+                        break
 
             # 표준산업분류코드
             if '표준산업' in row_text or ('주요사업' in row_text and not data.industry_code):

@@ -200,12 +200,19 @@ def _build_all_replacements(cd, rd) -> dict:
     red_notes = {
         '(상세하게 발굴경위 기재)': rd.discovery_background or '(확인 필요)',
     }
-    # TCB 등급 상세 (비고란) - "TI-  (NICE..." → "Ti-3등급(2025.8.28발급)"
+    # 10번: TCB 등급 비고란 - "본건 TCB 등급: TI-" 뒤에 실제 등급 삽입
     tcb_detail = rd.purpose_tcb_detail or ""
     if tcb_detail:
-        # "TI-3 등급(2025.8.28 발급)" 형태로 정리
-        red_notes['0000.00.00 발급'] = tcb_detail
-    # 투자의무4 비고란에 "별도 확인 필요" (텍스트 기반 - 이미 채워진 비고란에 추가)
+        # "TI-3 등급(2025.8.28 발급)" → "본건 TCB 등급: TI-3 등급(2025.8.28 발급)"
+        # 양식에서 "본건 TCB　등급: TI-" 다음의 빈 부분과 "0000.00.00 발급" 치환
+        m = re.search(r'(TI-\d+)\s*등급.*?\(([\d.]+)\s*발급\)', tcb_detail)
+        if m:
+            red_notes['본건 TCB\u3000등급: TI-'] = f'본건 TCB 등급: {m.group(1)} 등급'
+            red_notes['0000.00.00 발급'] = f'{m.group(2)} 발급'
+        else:
+            red_notes['본건 TCB\u3000등급: TI-'] = f'본건 TCB 등급: {tcb_detail}'
+    # 8번: 투자의무4 비고란에 "별도 확인 필요" 추가 (기존 텍스트 뒤에 추가)
+    red_notes['중소기업은행 신규 및 기존거래 기업'] = '중소기업은행 신규 및 기존거래 기업 [별도 확인 필요]'
     # 투심위 예정일
     red_notes['년  월 일'] = committee_date
 
@@ -471,7 +478,8 @@ def _apply_replacements(text: str, replacements: dict) -> str:
     for keyword, note in red_notes.items():
         if keyword in text:
             safe_note = _xml_safe(note)
-            text = text.replace(keyword, keyword + ' ' + safe_note, 1)
+            # keyword를 note로 완전 교체 (중복 방지)
+            text = text.replace(keyword, safe_note, 1)
 
     return text
 
