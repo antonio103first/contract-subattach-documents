@@ -185,6 +185,7 @@ def _build_all_replacements(cd, rd) -> dict:
     ]
 
     # ── 담당자 확인 필요 → 해당 행 전체를 적색으로 표시할 항목 키워드 ──
+    # 이 항목들은 행 전체(내용+평가+비고) 적색 표시
     red_full_rows = [
         '제34조 제4항의 후행투자 여부',
         '제34조 제10항에 의한 금지행위 여부',
@@ -325,19 +326,19 @@ def _apply_replacements(text: str, replacements: dict) -> str:
     # 선택된 값 → 적색(charPrIDRef=156), 비선택 값 → 텍스트 제거
     for yn_val in yn_markers:
         if '적' in yn_val:
-            # 적(Y)를 적색으로 표시
+            # 적(Y)를 적색으로 표시 (기울임 없음)
             text = text.replace(
                 'charPrIDRef="52"><hp:t>적(Y)</hp:t>',
-                f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"><hp:t>적(Y)</hp:t>',
+                f'charPrIDRef="{RED_CHARPR_ID}"><hp:t>적(Y)</hp:t>',
                 1
             )
             # 부(N) 텍스트 제거
             text = text.replace('>부(N)</hp:t>', '></hp:t>', 1)
         else:
-            # 부(N)를 적색으로 표시
+            # 부(N)를 적색으로 표시 (기울임 없음)
             text = text.replace(
                 'charPrIDRef="52"><hp:t>부(N)</hp:t>',
-                f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"><hp:t>부(N)</hp:t>',
+                f'charPrIDRef="{RED_CHARPR_ID}"><hp:t>부(N)</hp:t>',
                 1
             )
             # 적(Y) 텍스트 제거
@@ -456,21 +457,19 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             after5 = tc_pattern.sub(_fill_bigo, after5)
             text = before5 + after5
 
-    # 7. 담당자 확인 필요 행 → 해당 행 전체 <hp:tr>의 charPrIDRef를 적색(156)으로 변경
+    # 7. 담당자 확인 필요 행 → 행 전체를 적색(157)으로 변경
     red_full_rows = replacements.get('_red_full_rows', [])
     for keyword in red_full_rows:
         idx = text.find(keyword)
         if idx < 0:
             continue
-        # 키워드가 포함된 <hp:tr> 전체를 찾기
-        # <hp:tr> 시작점 찾기 (키워드 앞쪽으로 탐색)
         tr_start = text.rfind('<hp:tr', 0, idx)
         tr_end = text.find('</hp:tr>', idx)
         if tr_start >= 0 and tr_end >= 0:
             tr_end += len('</hp:tr>')
             tr_chunk = text[tr_start:tr_end]
-            # 해당 행의 모든 charPrIDRef를 적색으로 변경
-            modified_tr = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_ITALIC_CHARPR_ID}"', tr_chunk)
+            # 행 전체 → 적색만(157), 기울임 없음
+            modified_tr = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_CHARPR_ID}"', tr_chunk)
             text = text[:tr_start] + modified_tr + text[tr_end:]
 
     # 8. 텍스트 기반 주석 (발굴경위, TCB등급, 투심위예정일)
@@ -560,29 +559,35 @@ def _patch_flag_bits(template_path: str, target_path: str):
 
 # ━━━━━━━━━━━━━━━ 유틸 ━━━━━━━━━━━━━━━
 
-RED_ITALIC_CHARPR_ID = "156"
+RED_ITALIC_CHARPR_ID = "156"  # 적색+기울임 (주석용)
+RED_CHARPR_ID = "157"         # 적색만 (행 전체 강조용)
 
 
 def _add_red_italic_charpr(header_xml: str) -> str:
-    """header.xml에 적색+기울임 charPr id=156을 추가."""
-    if f'id="{RED_ITALIC_CHARPR_ID}"' in header_xml:
-        return header_xml  # 이미 존재
-
-    # 기존 charPr id=22 (표5 기본 글자속성)를 복사하여 적색+기울임으로 수정
+    """header.xml에 적색+기울임(156)과 적색만(157) charPr을 추가."""
     import re
     m = re.search(r'(<hh:charPr\s+id="22".*?</hh:charPr>)', header_xml, re.DOTALL)
     if not m:
         return header_xml
 
     base = m.group(1)
-    # id 변경, textColor를 적색으로, italic 추가
-    new_charpr = base.replace('id="22"', f'id="{RED_ITALIC_CHARPR_ID}"')
-    new_charpr = new_charpr.replace('textColor="#000000"', 'textColor="#FF0000"')
-    # italic 속성 추가 (height 뒤에)
-    new_charpr = new_charpr.replace('useFontSpace=', 'italic="1" useFontSpace=')
+    new_entries = ""
 
-    # </hh:charProperties> 앞에 삽입
-    header_xml = header_xml.replace('</hh:charProperties>', new_charpr + '\n</hh:charProperties>')
+    # charPr 156: 적색 + 기울임 (주석용)
+    if f'id="{RED_ITALIC_CHARPR_ID}"' not in header_xml:
+        cp156 = base.replace('id="22"', f'id="{RED_ITALIC_CHARPR_ID}"')
+        cp156 = cp156.replace('textColor="#000000"', 'textColor="#FF0000"')
+        cp156 = cp156.replace('useFontSpace=', 'italic="1" useFontSpace=')
+        new_entries += cp156 + "\n"
+
+    # charPr 157: 적색만 (행 전체 강조용)
+    if f'id="{RED_CHARPR_ID}"' not in header_xml:
+        cp157 = base.replace('id="22"', f'id="{RED_CHARPR_ID}"')
+        cp157 = cp157.replace('textColor="#000000"', 'textColor="#FF0000"')
+        new_entries += cp157 + "\n"
+
+    if new_entries:
+        header_xml = header_xml.replace('</hh:charProperties>', new_entries + '</hh:charProperties>')
     return header_xml
 
 
