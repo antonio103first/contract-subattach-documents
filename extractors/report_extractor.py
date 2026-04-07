@@ -543,6 +543,16 @@ def _extract_co_investors_table(tables, data: InvestmentReportData):
         break
 
 
+def _find_yn_value(cells: list) -> str:
+    """셀 목록에서 해당/미해당/O/X 값을 찾아 반환."""
+    valid = {'해당', '미해당', 'O', 'X', '가능', '불가', '적합', '부적합', '아님'}
+    for c in cells:
+        c_clean = c.strip()
+        if c_clean in valid:
+            return c_clean
+    return ""
+
+
 def _extract_appendix2(tables, data: InvestmentReportData):
     """별첨2 투자재원검토보고서에서 주목적투자, 투자구분 등을 추출."""
     for table in tables:
@@ -566,24 +576,15 @@ def _extract_appendix2(tables, data: InvestmentReportData):
 
             # 주목적 - 국토교통분야
             if '국토교통' in row_text and not data.purpose_transport:
-                for c in cells:
-                    if c and '국토교통' not in c and '주목적' not in c:
-                        data.purpose_transport = c
-                        break
+                data.purpose_transport = _find_yn_value(cells)
 
             # 주목적 - 혁신성장 모빌리티
-            if '모빌리티' in row_text and '혁신성장' in row_text and not data.purpose_mobility:
-                for c in cells:
-                    if c and '모빌리티' not in c and '투자대상' not in c:
-                        data.purpose_mobility = c
-                        break
+            if '모빌리티' in row_text and not data.purpose_mobility:
+                data.purpose_mobility = _find_yn_value(cells)
 
             # 주목적 - 남부권 전략산업
             if '남부권' in row_text and not data.purpose_south:
-                for c in cells:
-                    if c and '남부권' not in c and '투자대상' not in c:
-                        data.purpose_south = c
-                        break
+                data.purpose_south = _find_yn_value(cells)
 
             # 주목적 - TCB
             if ('TCB' in row_text or 'Ti-' in row_text or 'TI-' in row_text) and '투자대상' not in row_text:
