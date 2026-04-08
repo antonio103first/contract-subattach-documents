@@ -458,17 +458,22 @@ def _apply_replacements(text: str, replacements: dict) -> str:
             text = before5 + after5
 
     # 7. 담당자 확인 필요 행 → 행 전체를 적색(157)으로 변경
+    # 역순으로 처리하여 앞쪽 위치에 영향 주지 않음
     red_full_rows = replacements.get('_red_full_rows', [])
+    # 키워드 위치로 정렬 후 역순 처리
+    red_positions = []
     for keyword in red_full_rows:
         idx = text.find(keyword)
-        if idx < 0:
-            continue
+        if idx >= 0:
+            red_positions.append((idx, keyword))
+    red_positions.sort(reverse=True)  # 뒤에서부터 처리
+
+    for idx, keyword in red_positions:
         tr_start = text.rfind('<hp:tr', 0, idx)
         tr_end = text.find('</hp:tr>', idx)
         if tr_start >= 0 and tr_end >= 0:
             tr_end += len('</hp:tr>')
             tr_chunk = text[tr_start:tr_end]
-            # 행 전체 → 적색만(157), 기울임 없음
             modified_tr = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{RED_CHARPR_ID}"', tr_chunk)
             text = text[:tr_start] + modified_tr + text[tr_end:]
 
