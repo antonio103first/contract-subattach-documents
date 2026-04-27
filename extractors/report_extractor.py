@@ -92,6 +92,13 @@ def extract_report_data(filepath: str) -> InvestmentReportData:
 
     _extract_from_text(full_text, data, doc)
 
+    # 별첨1 주요투자조건 요약서 (우선 참조)
+    if doc:
+        _extract_appendix1_summary(doc.tables, data)
+        # 동반투자 테이블
+        if not data.co_investors:
+            _extract_co_investors_table(doc.tables, data)
+
     # 별첨2 투자재원검토보고서 + 벤처/이노비즈 인증
     if doc:
         _extract_appendix2(doc.tables, data)
@@ -413,6 +420,139 @@ def _extract_from_pdf_text(full_text: str, data: InvestmentReportData):
 
 # ━━━━━━━━━━━━━━━ 별첨2 + 인증 ━━━━━━━━━━━━━━━
 
+def _extract_appendix1_summary(tables, data: InvestmentReportData):
+    """별첨1 주요투자조건 요약서에서 투자조건을 우선 추출."""
+    for table in tables:
+        first_row_text = " ".join(c.text.strip() for c in table.rows[0].cells) if table.rows else ""
+        if '투자구분' not in first_row_text and '투자형태' not in first_row_text:
+            continue
+        # 주당 인수가격이 있는지 확인 (별첨1 특징)
+        all_text = " ".join(c.text.strip() for row in table.rows for c in row.cells)
+        if '주당 인수가격' not in all_text and '인수가격' not in all_text:
+            continue
+
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            row_text = " ".join(cells)
+
+            # 투자구분 (신규발행/구주)
+            if '투자구분' in row_text:
+                for i, c in enumerate(cells):
+                    if '투자구분' in c and i + 1 < len(cells):
+                        data.investment_type = cells[i + 1]
+                        break
+
+            # 투자형태 (상환전환우선주 등) - 별첨1 우선
+            if '투자형태' in row_text and not data.stock_type:
+                for i, c in enumerate(cells):
+                    if '투자형태' in c and i + 1 < len(cells):
+                        val = cells[i + 1].strip()
+                        # RCPS, CPS 등 약어도 풀네임으로 변환
+                        if val == 'RCPS' or '상환전환' in val:
+                            data.stock_type = '상환전환우선주'
+                        elif val == 'CPS' or '전환우선' in val:
+                            data.stock_type = '전환우선주'
+                        elif val:
+                            data.stock_type = val
+                        break
+
+            # 주당 인수가격 → 투자단가
+            if ('주당 인수가격' in row_text or '인수가격' in row_text) and not data.issue_price:
+                for i, c in enumerate(cells):
+                    if '인수가격' in c and i + 1 < len(cells):
+                        data.issue_price = cells[i + 1].strip()
+                        break
+
+            # 인수 주식수
+            if '인수 주식수' in row_text and not data.total_shares:
+                for i, c in enumerate(cells):
+                    if '인수 주식수' in c and i + 1 < len(cells):
+                        data.total_shares = cells[i + 1].strip()
+                        break
+
+            # 당사 투자금액
+            if '당사 투자금액' in row_text and not data.investment_amount:
+                for i, c in enumerate(cells):
+                    if '당사 투자금액' in c and i + 1 < len(cells):
+                        data.investment_amount = cells[i + 1].strip()
+                        break
+
+            # 기업가치
+            if 'Pre' in row_text:
+                for i, c in enumerate(cells):
+                    if 'Pre' in c and i + 1 < len(cells):
+                        data.pre_value = cells[i + 1].strip()
+                    if 'Post' in c and i + 1 < len(cells):
+                        data.post_value = cells[i + 1].strip()
+
+            # 주요조건
+            if '주요조건' in row_text:
+                for c in reversed(cells):
+                    if c and '주요조건' not in c and len(c) > 10:
+                        # 주요조건 텍스트에서 세부 내용 파싱
+                        _parse_conditions_text(c, data)
+                        break
+
+        # 동반투자 테이블 (별첨1 바로 다음에 있는 경우가 많음)
+        break  # 첫 번째 매칭 테이블만 처리
+
+
+def _parse_conditions_text(text: str, data: InvestmentReportData):
+    """주요조건 텍스트에서 존속기간, 상환조건, 전환조건 등을 파싱."""
+    # 존속기간
+    m = re.search(r'존속기간\s*(\d+)\s*년', text)
+    if m and not data.duration:
+        data.duration = m.group(1) + "년"
+
+    # 상환조건
+    m = re.search(r'(\d+)\s*년.*?(?:후|경과).*?상환', text)
+    if m and not data.redemption_terms:
+        years = m.group(1)
+        ytm = re.search(r'YTM\s*(\d+)\s*%', text)
+        rate = ytm.group(1) if ytm else ""
+        data.redemption_terms = f"{years}년후부터 상환청구 가능" + (f", 연복리 {rate}%" if rate else "")
+
+    # Refixing
+    m = re.search(r'IPO/M&?A.*?(\d+)\s*%', text)
+    if m and not data.refixing_terms:
+        data.refixing_terms = f"IPO/M&A {m.group(1)}%"
+
+
+def _extract_co_investors_table(tables, data: InvestmentReportData):
+    """동반투자 테이블에서 투자기관/금액/형태 추출."""
+    for table in tables:
+        first_text = " ".join(c.text.strip() for c in table.rows[0].cells) if table.rows else ""
+        if '투자기관' not in first_text:
+            continue
+
+        for row in table.rows[1:]:
+            cells = [cell.text.strip() for cell in row.cells]
+            if '합계' in " ".join(cells) or '합 계' in " ".join(cells):
+                break
+            if len(cells) >= 3:
+                names = cells[0].split('\n') if cells[0] else []
+                amounts = cells[1].split('\n') if len(cells) > 1 else []
+                # 케이런 자기 건은 제외
+                for k, name in enumerate(names):
+                    name = name.strip()
+                    if not name or '케이런' in name:
+                        continue
+                    amt = amounts[k].strip() if k < len(amounts) else ""
+                    if amt:
+                        data.co_investors.append((name, amt, ""))
+        break
+
+
+def _find_yn_value(cells: list) -> str:
+    """셀 목록에서 해당/미해당/O/X 값을 찾아 반환."""
+    valid = {'해당', '미해당', 'O', 'X', '가능', '불가', '적합', '부적합', '아님'}
+    for c in cells:
+        c_clean = c.strip()
+        if c_clean in valid:
+            return c_clean
+    return ""
+
+
 def _extract_appendix2(tables, data: InvestmentReportData):
     """별첨2 투자재원검토보고서에서 주목적투자, 투자구분 등을 추출."""
     for table in tables:
@@ -436,38 +576,31 @@ def _extract_appendix2(tables, data: InvestmentReportData):
 
             # 주목적 - 국토교통분야
             if '국토교통' in row_text and not data.purpose_transport:
-                for c in cells:
-                    if c and '국토교통' not in c and '주목적' not in c:
-                        data.purpose_transport = c
-                        break
+                data.purpose_transport = _find_yn_value(cells)
 
             # 주목적 - 혁신성장 모빌리티
-            if '모빌리티' in row_text and '혁신성장' in row_text and not data.purpose_mobility:
-                for c in cells:
-                    if c and '모빌리티' not in c and '투자대상' not in c:
-                        data.purpose_mobility = c
-                        break
+            if '모빌리티' in row_text and not data.purpose_mobility:
+                data.purpose_mobility = _find_yn_value(cells)
 
             # 주목적 - 남부권 전략산업
             if '남부권' in row_text and not data.purpose_south:
-                for c in cells:
-                    if c and '남부권' not in c and '투자대상' not in c:
-                        data.purpose_south = c
-                        break
+                data.purpose_south = _find_yn_value(cells)
 
             # 주목적 - TCB
-            if 'TCB' in row_text or 'Ti-' in row_text:
+            if ('TCB' in row_text or 'Ti-' in row_text or 'TI-' in row_text) and '투자대상' not in row_text:
                 if not data.purpose_tcb:
                     for c in cells:
-                        if c and 'TCB' not in c and '제61' not in c and '등급' not in c.replace('Ti-',''):
-                            data.purpose_tcb = c
+                        c_clean = c.strip()
+                        if c_clean in ('해당', '미해당', 'O', 'X', '가능', '불가'):
+                            data.purpose_tcb = c_clean
                             break
-                # TCB 상세 (비고란)
-                if not data.purpose_tcb_detail and len(cells) > 2:
-                    for c in cells:
-                        if 'Ti-' in c or 'TI-' in c:
-                            data.purpose_tcb_detail = c
-                            break
+                # TCB 상세 - "TI-3 등급(2025.8.28 발급)" 형태
+                # 반드시 "TI-숫자" + "발급" or "등급" 패턴이어야 함
+                for c in cells:
+                    m_tcb = re.search(r'TI-(\d+)\s*등급', c)
+                    if m_tcb:
+                        data.purpose_tcb_detail = c.strip()
+                        break
 
             # 표준산업분류코드
             if '표준산업' in row_text or ('주요사업' in row_text and not data.industry_code):

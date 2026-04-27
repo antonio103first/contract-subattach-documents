@@ -1,0 +1,13 @@
+== HWPX 파일 복원 방법 (Windows) ==
+
+GitHub에서 .b64 파일을 다운로드한 후, 아래 방법으로 복원하세요.
+
+[방법 1] Windows 명령 프롬프트 (cmd)
+  certutil -decode 위밋모빌리티_hwpx.b64 위밋모빌리티.hwpx
+  certutil -decode 양식원본_hwpx.b64 양식원본.hwpx
+
+[방법 2] PowerShell
+  [System.Convert]::FromBase64String((Get-Content 위밋모빌리티_hwpx.b64 -Raw)) | Set-Content 위밋모빌리티.hwpx -Encoding Byte
+  [System.Convert]::FromBase64String((Get-Content 양식원본_hwpx.b64 -Raw)) | Set-Content 양식원본.hwpx -Encoding Byte
+
+복원된 .hwpx 파일을 한컴오피스에서 열어주세요.
