@@ -70,8 +70,10 @@ class InvestmentReportData:
 
 # ── 지역 리스트 ──
 _REGIONS = (
-    '서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남'
-    '|전북|전남|경북|경남|제주|서울특별시|대전광역시|대전시|부산광역시'
+    '서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시'
+    '|경기도|강원도|강원특별자치도|충청북도|충청남도|전라북도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도'
+    '|서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주'
+    '|대전시|부산시'
 )
 
 
@@ -89,6 +91,8 @@ def extract_report_data(filepath: str) -> InvestmentReportData:
         paragraphs = [p.text.strip() for p in doc.paragraphs]
         full_text = "\n".join(paragraphs)
         _scan_all_tables(doc.tables, data)
+        # 제목("투자심사보고서") 직후 paragraph에서 회사명 fallback 추출
+        _extract_company_name_from_title(paragraphs, data)
 
     _extract_from_text(full_text, data, doc)
 
@@ -131,8 +135,10 @@ def _scan_all_tables(tables, data: InvestmentReportData):
         ):
             _extract_company_table(table, data)
 
-        # ── 투자조건 요약 테이블 ──
-        if not data.fund_usage:
+        # ── 투자조건 요약 테이블 (별첨1: 투자업체/총투자금액/주요조건/사용용도 등) ──
+        # fund_usage 외에도 company_name/투자조건 추출 대상이므로 항상 시도
+        if (not data.fund_usage or not data.company_name
+                or not data.investment_amount or not data.duration):
             _extract_investment_summary_table(table, data)
 
     # ── 주주현황 → 지분율 ──
@@ -216,8 +222,31 @@ def _extract_company_table(table, data: InvestmentReportData):
                     break
 
 
+def _extract_company_name_from_title(paragraphs: list, data: InvestmentReportData):
+    """제목('투자심사보고서') 직후 paragraph에서 회사명 fallback 추출.
+    예: paragraph[4]='투자심사보고서', paragraph[5]='㈜듀셀'"""
+    if data.company_name:
+        return
+    for i, p in enumerate(paragraphs):
+        if '투자심사보고서' in p or '투자검토보고서' in p:
+            # 다음 5개 paragraph에서 회사명 후보 탐색
+            for j in range(i + 1, min(i + 6, len(paragraphs))):
+                cand = paragraphs[j].strip()
+                if not cand or len(cand) > 30:
+                    continue
+                # 케이런/조합/펀드 등 투자자측 명칭 제외
+                if any(kw in cand for kw in ['케이런', '조합', '펀드', '벤처스', '유한회사']):
+                    continue
+                # 회사명 형식: ㈜XXX, 주식회사 XXX, XXX 주식회사, XXX㈜
+                if re.search(r'(?:㈜|주식회사|\(주\))', cand):
+                    data.company_name = cand
+                    return
+            break
+
+
 def _extract_investment_summary_table(table, data: InvestmentReportData):
-    """투자조건 요약 테이블에서 사용용도, 위약벌 등 추출."""
+    """투자조건 요약 테이블에서 회사명, 투자조건, 사용용도, 위약벌 등 추출.
+    별첨1 주요 투자조건 요약서(투자업체/총투자금액/투자방법/투자단가/주요조건 등) 형태 지원."""
     for row in table.rows:
         cells = [cell.text.strip() for cell in row.cells]
         if len(cells) < 2:
@@ -225,8 +254,97 @@ def _extract_investment_summary_table(table, data: InvestmentReportData):
         label = cells[0]
         value = cells[1] if len(cells) > 1 else ""
 
+        # 회사명 (투자업체)
+        if '투자업체' in label and not data.company_name and value:
+            v = value.replace('\xa0', '').strip()
+            if v and '케이런' not in v and '조합' not in v and '펀드' not in v:
+                data.company_name = v
+
+        # 총투자금액
+        if ('총투자금액' in label or '투자금액' in label) and not data.investment_amount:
+            m = re.search(r'([\d,]{6,})\s*원', value)
+            if m:
+                data.investment_amount = m.group(1) + "원"
+
+        # 투자단가 (예: "6,214원 (액면가: 500원)")
+        if '투자단가' in label and not data.issue_price:
+            m = re.search(r'([\d,]+)\s*원', value)
+            if m:
+                data.issue_price = m.group(1) + "원"
+            m2 = re.search(r'액면가\s*[:：]?\s*([\d,]+)\s*원', value)
+            if m2 and not data.par_value:
+                data.par_value = m2.group(1)
+
+        # 인수주식수
+        if '인수주식수' in label and not data.total_shares:
+            m = re.search(r'([\d,]+)\s*주', value)
+            if m:
+                data.total_shares = m.group(1) + "주"
+
+        # 투자전 기업가치 (Pre-Value)
+        if '투자전' in label and '기업가치' in label and not data.pre_value:
+            m = re.search(r'(\d+)\s*억', value)
+            if m:
+                data.pre_value = m.group(1) + "억원"
+
+        # 투자방식 (투자방법: 신규발행 RCPS 인수 등)
+        if '투자방법' in label and not data.stock_type:
+            if 'RCPS' in value:
+                data.stock_type = '상환전환우선주'
+            elif 'CPS' in value or '전환우선주' in value:
+                data.stock_type = '전환우선주'
+            elif 'RPS' in value or '상환우선주' in value:
+                data.stock_type = '상환우선주'
+            elif 'CB' in value or '전환사채' in value:
+                data.stock_type = '전환사채'
+            elif 'BW' in value or '신주인수권부사채' in value:
+                data.stock_type = '신주인수권부사채'
+            elif '보통주' in value:
+                data.stock_type = '보통주'
+
+        # 주요조건 (존속기간, 상환, Refixing)
+        if '주요조건' in label:
+            if not data.duration:
+                m = re.search(r'존속기간\s*(\d+)\s*년', value)
+                if m:
+                    data.duration = m.group(1) + "년"
+            if not data.redemption_terms:
+                m = re.search(r'상환청구.*?(\d+)\s*년\s*후.*?YTM\s*(\d+)\s*%', value)
+                if m:
+                    data.redemption_terms = f"{m.group(1)}년후부터 상환청구 가능, 연복리 {m.group(2)}%"
+                else:
+                    m = re.search(r'YTM\s*(\d+)\s*%', value)
+                    if m:
+                        data.redemption_terms = f"YTM {m.group(1)}%"
+            if not data.refixing_terms:
+                m = re.search(r'IPO[/]?M&A\s*리?픽?싱?\s*(\d+)\s*%', value)
+                if m:
+                    data.refixing_terms = f"IPO/M&A {m.group(1)}%"
+
+        # 동반투자내역
+        if '동반투자' in label and not data.co_investors:
+            for line in value.split('\n'):
+                line = line.strip().lstrip('-').strip()
+                if line and not line.endswith(')'):
+                    # "IBK벤처투자-퓨처플레이" 형태
+                    if not any(kw in line for kw in ['Post-Value', 'Pre-Value', '납입', '신주']):
+                        data.co_investors.append((line, "", ""))
+
+        # 투자금 사용용도
         if '투자금 사용용도' in label and '위반' not in label and not data.fund_usage:
             data.fund_usage = value
+
+        # 의무불이행 이자율 (보통 단일 % 값)
+        if '의무불이행' in label and '이자율' in label:
+            m = re.search(r'(\d+)\s*%', value)
+            if m:
+                rate = m.group(1)
+                if not data.penalty_rate:
+                    data.penalty_rate = rate
+                if not data.delay_rate:
+                    data.delay_rate = rate
+                if not data.buyback_rate:
+                    data.buyback_rate = rate
 
 
 def _extract_shareholder_table(tables, data: InvestmentReportData):

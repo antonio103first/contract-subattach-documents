@@ -56,9 +56,10 @@ class InvestmentContractData:
 
 # ── 지역 리스트 (주소 추출용) ──
 _REGIONS = (
-    '서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남'
-    '|전북|전남|경북|경남|제주|서울특별시|부산광역시|대구광역시'
-    '|인천광역시|광주광역시|대전광역시|울산광역시|대전시|부산시'
+    '서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시'
+    '|경기도|강원도|강원특별자치도|충청북도|충청남도|전라북도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도'
+    '|서울|경기|인천|부산|대구|광주|대전|울산|세종|강원|충북|충남|전북|전남|경북|경남|제주'
+    '|대전시|부산시'
 )
 
 
@@ -115,15 +116,19 @@ def _extract_parties(full_text: str, data: InvestmentContractData):
         if data.company_name:
             break
         for pat in [
+            # 전위형: "주식회사 XXX", "㈜XXX", "(주)XXX"
             r'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
             r'(?:^회사)\s*[:：]?\s*\n\s*((?:주식회사|㈜|\(주\))\s*\S+)',  # "회사\n주식회사 XXX"
             r'(?:회사)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
             r'"회사"의\s*상호\s*[:：]\s*((?:주식회사|㈜|\(주\))\s*\S+)',
+            # 후위형: "XXX 주식회사", "XXX㈜", "XXX(주)" — 테라릭스 케이스
+            r'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]?\s*\n?\s*([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?\s*(?:주식회사|㈜|\(주\)))',
+            r'(?:^회사)\s*[:：]?\s*\n\s*([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?\s*(?:주식회사|㈜|\(주\)))',
         ]:
             m = re.search(pat, area, re.MULTILINE)
             if m:
                 name = m.group(1).strip().rstrip('"\')')
-                if '케이런' not in name and '조합' not in name:
+                if '케이런' not in name and '조합' not in name and '펀드' not in name:
                     data.company_name = name
                     break
 
@@ -163,6 +168,15 @@ def _extract_parties(full_text: str, data: InvestmentContractData):
             if m and '테헤란' not in m.group(0) and '송강빌딩' not in m.group(0) and '강남구' not in m.group(0):
                 data.address = (m.group(1) + m.group(2)).strip()
                 break
+
+    # 새 양식: "회사명\n{주소}\n대표이사 ..." (콜론/주소 라벨 없음)
+    if not data.address and data.company_name:
+        # 회사명 다음 줄이 주소인 패턴
+        escaped_name = re.escape(data.company_name)
+        pat = escaped_name + r'\s*\n\s*(' + _REGIONS + r')([^\n]{5,100})\s*\n\s*대표이사'
+        m = re.search(pat, full_text[:5000])
+        if m and '테헤란' not in m.group(0) and '송강빌딩' not in m.group(0):
+            data.address = (m.group(1) + m.group(2)).strip()
 
     # ── 이해관계인 ──
     m = re.search(r'이해관계인.*?대표이사\s*([가-힣]{2,4})', full_text)
