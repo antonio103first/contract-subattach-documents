@@ -40,12 +40,9 @@ def _build_all_replacements(cd, rd) -> dict:
     """작성지침에 따라 모든 placeholder → 실제 값 매핑을 구성."""
 
     # ── 기본 데이터 준비 ──
+    from extractors.contract_extractor import normalize_company_name
     company = rd.company_name or cd.company_name
-    short = company
-    if '주식회사' in company:
-        short = "㈜" + company.replace('주식회사', '').replace('㈜', '').strip()
-    if not short.startswith('㈜') and '㈜' not in short and '(주)' not in short:
-        short = "㈜" + short
+    short = normalize_company_name(company) or company
 
     rep = rd.representative or cd.representative or ""
     addr = rd.address or cd.address or ""

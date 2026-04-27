@@ -17,6 +17,20 @@ def _read_hwp_text(filepath: str) -> str:
     return text
 
 
+def normalize_company_name(name: str) -> str:
+    """회사명을 ㈜XXX 형태로 정규화.
+    지원 입력: '주식회사 테라릭스', '㈜테라릭스', '(주)테라릭스',
+              '테라릭스 주식회사', '테라릭스㈜', '테라릭스(주)'
+    """
+    if not name:
+        return ""
+    n = name.strip().rstrip('"\'')
+    for marker in ('주식회사', '㈜', '(주)', '（주）'):
+        n = n.replace(marker, '')
+    n = re.sub(r'\s+', '', n)  # 잔여 공백 제거
+    return f"㈜{n}" if n else ""
+
+
 @dataclass
 class InvestmentContractData:
     company_name: str = ""
@@ -115,19 +129,23 @@ def _extract_parties(full_text: str, data: InvestmentContractData):
     for area in search_areas:
         if data.company_name:
             break
+        # 동일 라인 내에서만 인접 단어 매칭 (newline 미포함)
+        _SP = r'[ \t]'  # horizontal whitespace only
+        _WORD = r'[가-힣A-Za-z0-9]+'
         for pat in [
             # 전위형: "주식회사 XXX", "㈜XXX", "(주)XXX"
-            r'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
-            r'(?:^회사)\s*[:：]?\s*\n\s*((?:주식회사|㈜|\(주\))\s*\S+)',  # "회사\n주식회사 XXX"
-            r'(?:회사)\s*[:：]\s*\n?\s*((?:주식회사|㈜|\(주\))\s*\S+)',
-            r'"회사"의\s*상호\s*[:：]\s*((?:주식회사|㈜|\(주\))\s*\S+)',
+            rf'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]{_SP}*\n?{_SP}*((?:주식회사|㈜|\(주\)){_SP}*{_WORD}(?:{_SP}+{_WORD}){{0,2}})',
+            rf'(?:^회사){_SP}*[:：]?{_SP}*\n{_SP}*((?:주식회사|㈜|\(주\)){_SP}*{_WORD}(?:{_SP}+{_WORD}){{0,2}})',
+            rf'(?:회사){_SP}*[:：]{_SP}*\n?{_SP}*((?:주식회사|㈜|\(주\)){_SP}*{_WORD}(?:{_SP}+{_WORD}){{0,2}})',
+            rf'"회사"의{_SP}*상호{_SP}*[:：]{_SP}*((?:주식회사|㈜|\(주\)){_SP}*{_WORD}(?:{_SP}+{_WORD}){{0,2}})',
             # 후위형: "XXX 주식회사", "XXX㈜", "XXX(주)" — 테라릭스 케이스
-            r'(?:회사명|발행회사|발행인|피투자자|투자기업)\s*[:：]?\s*\n?\s*([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?\s*(?:주식회사|㈜|\(주\)))',
-            r'(?:^회사)\s*[:：]?\s*\n\s*([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?\s*(?:주식회사|㈜|\(주\)))',
+            rf'(?:회사명|발행회사|발행인|피투자자|투자기업){_SP}*[:：]?{_SP}*\n?{_SP}*({_WORD}(?:{_SP}+{_WORD}){{0,2}}{_SP}*(?:주식회사|㈜|\(주\)))',
+            rf'(?:^회사){_SP}*[:：]?{_SP}*\n{_SP}*({_WORD}(?:{_SP}+{_WORD}){{0,2}}{_SP}*(?:주식회사|㈜|\(주\)))',
         ]:
             m = re.search(pat, area, re.MULTILINE)
             if m:
-                name = m.group(1).strip().rstrip('"\')')
+                # ')' 는 (주) 표기의 일부일 수 있으므로 stripping 대상에서 제외
+                name = m.group(1).strip().rstrip('"\'')
                 if '케이런' not in name and '조합' not in name and '펀드' not in name:
                     data.company_name = name
                     break

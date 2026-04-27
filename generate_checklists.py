@@ -90,9 +90,10 @@ def main():
     print(f"  발굴자: {report_data.discoverer}")
     print(f"  심사자: {report_data.reviewer}")
 
-    # 회사명으로 출력 파일명 구성
-    company_short = report_data.company_name or contract_data.company_name
-    company_short = company_short.replace('㈜', '').replace('주식회사', '').replace('(주)', '').strip()
+    # 회사명으로 출력 파일명 구성 (㈜ 등 제거하고 본명만)
+    from extractors.contract_extractor import normalize_company_name
+    company_full = report_data.company_name or contract_data.company_name
+    company_short = normalize_company_name(company_full).lstrip('㈜')
 
     # 3단계: DOCX 체크리스트 생성
     print()

@@ -76,12 +76,9 @@ def generate_docx_checklist(contract_data, report_data, template_path: str, outp
     date_str = f"{now.year}년 {now.month}월 {now.day}일"
 
     # 데이터 준비
+    from extractors.contract_extractor import normalize_company_name
     company_name = report_data.company_name or contract_data.company_name
-    short_name = company_name  # ㈜위밋모빌리티
-    if '주식회사' in company_name:
-        short_name = "㈜" + company_name.replace('주식회사', '').replace('㈜', '').strip()
-    if not short_name.startswith('㈜') and '㈜' not in short_name:
-        short_name = "㈜" + short_name
+    short_name = normalize_company_name(company_name) or company_name
 
     representative = report_data.representative or contract_data.representative
     address = report_data.address or contract_data.address
